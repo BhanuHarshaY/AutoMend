@@ -1,15 +1,13 @@
 """
 Bias Detection via Data Slicing for Glaive Function Calling v2
-Analyzes dataset slices to detect representation bias and skew.
+Uses Polars for analysis, with pandas bridge for Fairlearn where needed.
 """
 
 import json
 import logging
 from pathlib import Path
 
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import LabelEncoder
+import polars as pl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,241 +16,133 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PROCESSED_FILE = Path(__file__).resolve().parents[1] / "data" / "processed" / "glaive_processed.jsonl"
-BIAS_DIR       = Path(__file__).resolve().parents[1] / "data" / "processed" / "validation"
+BIAS_DIR = Path(__file__).resolve().parents[1] / "data" / "processed" / "validation"
 
 REPRESENTATION_THRESHOLD = 0.05
 
 
-def load_data(filepath: Path) -> pd.DataFrame:
-    """Load processed JSONL into DataFrame."""
+def load_data(filepath: Path) -> pl.DataFrame:
     records = []
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
                 records.append(json.loads(line))
-    return pd.DataFrame(records)
+    return pl.DataFrame(records)
 
 
-def add_slice_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Engineer slicing features for bias analysis.
-    These replace demographic features since Glaive has none.
-    """
-    df = df.copy()
+def add_slice_features(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns([
+        pl.when(pl.col("num_turns") <= 1).then(pl.lit("single"))
+          .when(pl.col("num_turns") <= 3).then(pl.lit("short"))
+          .when(pl.col("num_turns") <= 5).then(pl.lit("medium"))
+          .otherwise(pl.lit("long"))
+          .alias("turn_bucket"),
+        pl.when(pl.col("num_calls") <= 0).then(pl.lit("no_calls"))
+          .when(pl.col("num_calls") <= 1).then(pl.lit("one_call"))
+          .when(pl.col("num_calls") <= 2).then(pl.lit("two_calls"))
+          .otherwise(pl.lit("many_calls"))
+          .alias("call_bucket"),
+        (pl.col("num_defined_functions") > 0).alias("has_defined_functions"),
+    ])
 
-    # Turn count bucket slice
-    df["turn_bucket"] = pd.cut(
-        df["num_turns"],
-        bins=[0, 1, 3, 5, 100],
-        labels=["single", "short", "medium", "long"],
-        right=True
+
+def analyze_slice(df: pl.DataFrame, slice_col: str) -> pl.DataFrame:
+    total = df.height
+    groups = df.group_by(slice_col).agg([
+        pl.len().alias("count"),
+        pl.col("num_turns").mean().alias("avg_turns"),
+        pl.col("num_calls").mean().alias("avg_calls"),
+        pl.col("has_malformed").sum().alias("malformed_count"),
+        pl.col("has_error_handling").mean().alias("error_handling_pct"),
+    ])
+    return groups.with_columns([
+        (pl.col("count") / total).round(4).alias("proportion"),
+        (pl.col("count") / total < REPRESENTATION_THRESHOLD).alias("is_underrepresented"),
+    ]).rename({slice_col: "slice_value"}).with_columns(
+        pl.lit(slice_col).alias("slice_column")
     )
 
-    # Call count bucket slice
-    df["call_bucket"] = pd.cut(
-        df["num_calls"],
-        bins=[-1, 0, 1, 2, 100],
-        labels=["no_calls", "one_call", "two_calls", "many_calls"],
-        right=True
-    )
 
-    # Has defined functions slice
-    df["has_defined_functions"] = df["num_defined_functions"] > 0
-
-    return df
-
-
-def analyze_slice(df: pd.DataFrame, slice_col: str) -> pd.DataFrame:
-    """
-    Analyze representation and statistics for a given slice column.
-    Returns a DataFrame with per slice statistics.
-    """
-    total = len(df)
-    stats = []
-
-    for slice_val, group in df.groupby(slice_col, observed=True):
-        count      = len(group)
-        proportion = count / total
-        avg_turns  = group["num_turns"].mean()
-        avg_calls  = group["num_calls"].mean()
-        malformed  = group["has_malformed"].sum()
-        error_pct  = group["has_error_handling"].mean()
-
-        is_underrepresented = proportion < REPRESENTATION_THRESHOLD
-
-        stats.append({
-            "slice_column":        slice_col,
-            "slice_value":         str(slice_val),
-            "count":               count,
-            "proportion":          round(proportion, 4),
-            "avg_turns":           round(avg_turns, 2),
-            "avg_calls":           round(avg_calls, 2),
-            "malformed_count":     int(malformed),
-            "error_handling_pct":  round(error_pct, 4),
-            "is_underrepresented": is_underrepresented,
-        })
-
-    return pd.DataFrame(stats)
-
-
-def detect_representation_bias(slice_df: pd.DataFrame) -> list:
-    """
-    Detect slices that are significantly underrepresented.
-    Returns list of bias findings.
-    """
+def detect_representation_bias(slice_df: pl.DataFrame) -> list:
     findings = []
-    underrepresented = slice_df[slice_df["is_underrepresented"]]
-
-    for _, row in underrepresented.iterrows():
+    under = slice_df.filter(pl.col("is_underrepresented"))
+    for row in under.iter_rows(named=True):
         findings.append({
             "slice_column": row["slice_column"],
-            "slice_value":  row["slice_value"],
-            "proportion":   row["proportion"],
-            "count":        row["count"],
-            "severity":     "high" if row["proportion"] < 0.01 else "medium",
+            "slice_value": str(row["slice_value"]),
+            "proportion": row["proportion"],
+            "count": row["count"],
+            "severity": "high" if row["proportion"] < 0.01 else "medium",
             "recommendation": (
                 f"Slice '{row['slice_value']}' in '{row['slice_column']}' "
                 f"represents only {row['proportion']:.2%} of data. "
                 f"Consider oversampling or collecting more examples."
-            )
+            ),
         })
-
     return findings
 
 
 def suggest_mitigation(findings: list) -> list:
-    """
-    Suggest mitigation strategies for detected bias.
-    Per grading requirements bias mitigation must be documented.
-    """
     mitigations = []
     for finding in findings:
         if finding["severity"] == "high":
             strategy = "oversample"
-            detail   = (
-                f"Apply SMOTE or random oversampling to '{finding['slice_value']}' "
-                f"slice to bring representation above 5 percent threshold."
-            )
+            detail = f"Apply SMOTE or random oversampling to '{finding['slice_value']}' slice."
         else:
             strategy = "collect_more"
-            detail   = (
-                f"Collect additional examples for '{finding['slice_value']}' "
-                f"slice or apply sample weights during fine tuning."
-            )
-
+            detail = f"Collect additional examples for '{finding['slice_value']}' slice."
         mitigations.append({
             "slice_column": finding["slice_column"],
-            "slice_value":  finding["slice_value"],
-            "strategy":     strategy,
-            "detail":       detail,
+            "slice_value": finding["slice_value"],
+            "strategy": strategy,
+            "detail": detail,
         })
-
     return mitigations
 
 
-def print_bias_report(
-    slice_results: dict,
-    findings: list,
-    mitigations: list
-) -> None:
-    """Print a clean bias detection report."""
-    print("\n" + "=" * 60)
-    print("          BIAS DETECTION REPORT")
-    print("=" * 60)
-
-    for slice_col, slice_df in slice_results.items():
-        print(f"\nSlice: {slice_col}")
-        print("-" * 40)
-        print(slice_df[[
-            "slice_value", "count", "proportion",
-            "avg_turns", "avg_calls", "is_underrepresented"
-        ]].to_string(index=False))
-
-    print("\n" + "=" * 60)
-    if findings:
-        print(f"BIAS FINDINGS: {len(findings)} underrepresented slices detected")
-        for f in findings:
-            print(f"\n  Severity : {f['severity'].upper()}")
-            print(f"  Slice    : {f['slice_column']} = {f['slice_value']}")
-            print(f"  Coverage : {f['proportion']:.2%} ({f['count']} records)")
-            print(f"  Action   : {f['recommendation']}")
-    else:
-        print("No significant bias detected across all slices.")
-
-    if mitigations:
-        print("\n" + "=" * 60)
-        print("MITIGATION STRATEGIES:")
-        for m in mitigations:
-            print(f"\n  Slice    : {m['slice_column']} = {m['slice_value']}")
-            print(f"  Strategy : {m['strategy']}")
-            print(f"  Detail   : {m['detail']}")
-
-    print("\n" + "=" * 60)
-
-
 def run_bias_detection(filepath: Path = PROCESSED_FILE) -> dict:
-    """Main bias detection pipeline."""
     BIAS_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info("Loading processed data...")
     df = load_data(filepath)
-    logger.info("Loaded %d records", len(df))
+    logger.info("Loaded %d records", df.height)
 
-    logger.info("Engineering slice features...")
     df = add_slice_features(df)
 
-    # Define slices to analyze
     slice_columns = [
-        "complexity_tier",
-        "turn_bucket",
-        "call_bucket",
-        "has_error_handling",
-        "has_parallel",
-        "has_defined_functions",
+        "complexity_tier", "turn_bucket", "call_bucket",
+        "has_error_handling", "has_parallel", "has_defined_functions",
     ]
 
-    # Analyze each slice
-    slice_results = {}
     all_slice_dfs = []
-
+    slice_results = {}
     for col in slice_columns:
         logger.info("Analyzing slice: %s", col)
-        slice_df = analyze_slice(df, col)
-        slice_results[col] = slice_df
-        all_slice_dfs.append(slice_df)
+        sdf = analyze_slice(df, col)
+        slice_results[col] = sdf
+        all_slice_dfs.append(sdf)
 
-    # Combine all slice results
-    combined_df = pd.concat(all_slice_dfs, ignore_index=True)
-
-    # Detect bias
-    logger.info("Detecting representation bias...")
-    findings   = detect_representation_bias(combined_df)
+    combined = pl.concat(all_slice_dfs)
+    findings = detect_representation_bias(combined)
     mitigations = suggest_mitigation(findings)
-
     logger.info("Found %d bias findings", len(findings))
 
-    # Print report
-    print_bias_report(slice_results, findings, mitigations)
-
-    # Save report
     report = {
-        "total_records":    len(df),
-        "slices_analyzed":  len(slice_columns),
-        "findings_count":   len(findings),
-        "bias_detected":    len(findings) > 0,
-        "findings":         findings,
-        "mitigations":      mitigations,
+        "total_records": df.height,
+        "slices_analyzed": len(slice_columns),
+        "findings_count": len(findings),
+        "bias_detected": len(findings) > 0,
+        "findings": findings,
+        "mitigations": mitigations,
         "slice_statistics": {
-            col: slice_results[col].to_dict(orient="records")
-            for col in slice_columns
-        }
+            col: slice_results[col].to_dicts() for col in slice_columns
+        },
     }
 
     report_path = BIAS_DIR / "bias_report.json"
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2, default=str)
-
     logger.info("Bias report saved to %s", report_path)
     return report
 
@@ -261,4 +151,3 @@ if __name__ == "__main__":
     report = run_bias_detection()
     print(f"\nBias detected: {report['bias_detected']}")
     print(f"Findings: {report['findings_count']}")
-    print(f"Slices analyzed: {report['slices_analyzed']}")

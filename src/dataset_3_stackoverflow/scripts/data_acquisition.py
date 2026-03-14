@@ -20,15 +20,13 @@ import requests
 
 from config import config, ERROR_PATTERNS, INFRA_PATTERNS
 
-# Fix Windows console encoding
 if sys.platform == 'win32':
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     except AttributeError:
-        pass  # Python < 3.7
+        pass
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -304,11 +302,9 @@ def run_acquisition(use_csv: bool = False) -> dict:
     
     try:
         if use_csv:
-            # Load from CSV files
             questions = load_questions_from_csv()
             csv_answers = load_answers_from_csv()
             
-            # Combine questions and answers
             combined = []
             for q in questions:
                 qid = q["question_id"]
@@ -328,21 +324,16 @@ def run_acquisition(use_csv: bool = False) -> dict:
             stats["answers_matched"] = len(combined)
             
         else:
-            # Fetch from API
             requester = RateLimitedRequester()
             
-            # Fetch questions
             api_questions = fetch_questions_from_api(requester)
             
-            # Save raw questions
             with open(config.raw_dir / "questions_raw.json", "w", encoding="utf-8") as f:
                 json.dump({"items": api_questions}, f, indent=2)
             
-            # Fetch answers in batches
             answer_ids = [q["accepted_answer_id"] for q in api_questions]
             fetched_answers = fetch_answers_batch(requester, answer_ids)
             
-            # Combine
             combined = []
             for q in api_questions:
                 aid = q.get("accepted_answer_id")
@@ -363,7 +354,6 @@ def run_acquisition(use_csv: bool = False) -> dict:
             stats["questions_fetched"] = len(api_questions)
             stats["answers_matched"] = len(combined)
         
-        # Save combined data
         output_path = config.raw_dir / "qa_pairs_raw.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(combined, f, indent=2)
@@ -384,7 +374,6 @@ def run_acquisition(use_csv: bool = False) -> dict:
         stats["end_time"] = datetime.now().isoformat()
         stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
         
-        # Save stats
         stats_path = config.LOGS_DIR / "acquisition_stats.json"
         with open(stats_path, "w") as f:
             json.dump(stats, f, indent=2)

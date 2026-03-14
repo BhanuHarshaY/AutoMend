@@ -3,7 +3,7 @@ Unit tests for bias detection pipeline.
 """
 
 import pytest
-import pandas as pd
+import polars as pl
 import sys
 from pathlib import Path
 import importlib.util
@@ -24,7 +24,7 @@ suggest_mitigation = glaive_bias_detection.suggest_mitigation
 @pytest.fixture
 def sample_df():
     """Fixture providing a representative processed DataFrame."""
-    return pd.DataFrame({
+    return pl.DataFrame({
         "num_turns":             [1, 2, 3, 4, 5, 6, 7, 2, 1, 3] * 100,
         "num_calls":             [0, 1, 2, 3, 0, 1, 2, 0, 1, 0] * 100,
         "complexity_tier":       ["none", "simple", "complex", "moderate",
@@ -58,14 +58,14 @@ class TestAddSliceFeatures:
         """Test turn_bucket contains expected category values."""
         result = add_slice_features(sample_df)
         valid_buckets = {"single", "short", "medium", "long"}
-        actual = set(result["turn_bucket"].dropna().unique())
+        actual = set(result["turn_bucket"].drop_nulls().unique().to_list())
         assert actual.issubset(valid_buckets)
 
     def test_call_bucket_values(self, sample_df):
         """Test call_bucket contains expected category values."""
         result = add_slice_features(sample_df)
         valid_buckets = {"no_calls", "one_call", "two_calls", "many_calls"}
-        actual = set(result["call_bucket"].dropna().unique())
+        actual = set(result["call_bucket"].drop_nulls().unique().to_list())
         assert actual.issubset(valid_buckets)
 
     def test_original_df_not_modified(self, sample_df):
@@ -80,7 +80,7 @@ class TestAnalyzeSlice:
     def test_returns_dataframe(self, sample_df):
         """Test analyze_slice returns a DataFrame."""
         result = analyze_slice(sample_df, "complexity_tier")
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, pl.DataFrame)
 
     def test_has_required_columns(self, sample_df):
         """Test result has all required columns."""
@@ -101,12 +101,12 @@ class TestAnalyzeSlice:
     def test_count_matches_total(self, sample_df):
         """Test counts across slices sum to total records."""
         result = analyze_slice(sample_df, "complexity_tier")
-        assert result["count"].sum() == len(sample_df)
+        assert result["count"].sum() == sample_df.height
 
     def test_underrepresented_flagged_correctly(self, sample_df):
         """Test slices below threshold are flagged as underrepresented."""
         result = analyze_slice(sample_df, "complexity_tier")
-        for _, row in result.iterrows():
+        for row in result.iter_rows(named=True):
             if row["proportion"] < 0.05:
                 assert row["is_underrepresented"] == True
             else:
@@ -136,7 +136,7 @@ class TestDetectRepresentationBias:
 
     def test_high_severity_for_very_small_slices(self):
         """Test very small slices get high severity."""
-        slice_df = pd.DataFrame([{
+        slice_df = pl.DataFrame([{
             "slice_column":        "test_col",
             "slice_value":         "rare_value",
             "proportion":          0.005,
@@ -150,7 +150,7 @@ class TestDetectRepresentationBias:
 
     def test_medium_severity_for_medium_slices(self):
         """Test medium slices get medium severity."""
-        slice_df = pd.DataFrame([{
+        slice_df = pl.DataFrame([{
             "slice_column":        "test_col",
             "slice_value":         "medium_value",
             "proportion":          0.03,
@@ -164,7 +164,7 @@ class TestDetectRepresentationBias:
 
     def test_no_findings_for_balanced_data(self):
         """Test balanced data returns no findings."""
-        slice_df = pd.DataFrame([
+        slice_df = pl.DataFrame([
             {
                 "slice_column": "test", "slice_value": "a",
                 "proportion": 0.5, "count": 500,

@@ -14,7 +14,7 @@ PROCESSED_DIR = PROJECT_ROOT / "data" / "processed" / "ds2_loghub" / "mlops_proc
 if not PROCESSED_DIR.exists():
     PROCESSED_DIR = DS2_ROOT / "data_processed" / "mlops_processed"
 
-import pandas as pd
+import polars as pl
 import pytest
 
 from aggregate.aggregates import make_time_bucket
@@ -22,7 +22,7 @@ from aggregate.aggregates import make_time_bucket
 SYSTEMS = ["linux", "hpc", "hdfs", "hadoop", "spark"]
 
 
-def _make_labeled_df() -> pd.DataFrame:
+def _make_labeled_df() -> pl.DataFrame:
     """Create a synthetic labeled events DataFrame."""
     rows = []
     event_types = ["job_failed", "normal_ops", "auth_failure", "network_issue"]
@@ -47,7 +47,7 @@ def _make_labeled_df() -> pd.DataFrame:
                 "extras": "{}",
                 "event_type": event_types[i % len(event_types)],
             })
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 # ── make_time_bucket tests ─────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ class TestAggregateMetrics:
         from aggregate.aggregates import aggregate_metrics
         df = _make_labeled_df()
         events_path = tmp_path / "events.parquet"
-        df.to_parquet(events_path, index=False)
+        df.write_parquet(events_path)
         counts, error_rate, top_templates = aggregate_metrics(
             events_path=events_path,
             out_dir=tmp_path,
@@ -109,12 +109,12 @@ class TestAggregateMetrics:
     def test_top_templates_per_system_max_10(self, tmp_path):
         _, _, top_templates = self._run_aggregate(tmp_path)
         for system in SYSTEMS:
-            count = len(top_templates[top_templates["system"] == system])
+            count = top_templates.filter(pl.col("system") == system).height
             assert count <= 10, f"{system} has {count} templates (max 10)"
 
     def test_all_systems_in_event_counts(self, tmp_path):
         counts, _, _ = self._run_aggregate(tmp_path)
-        assert set(counts["system"].unique()) == set(SYSTEMS)
+        assert set(counts["system"].unique().to_list()) == set(SYSTEMS)
 
     def test_error_rate_output_files_created(self, tmp_path):
         self._run_aggregate(tmp_path)

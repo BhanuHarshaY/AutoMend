@@ -3,9 +3,8 @@ Orchestrator. Reads raw parquet chunks produced by stack_iac_sample.py,
 transforms each row via payload_preprocess.py, validates the output,
 and writes training records to data/processed/ds6_the_stack/training_records.jsonl.
 
-Memory stays flat: one chunk loaded at a time.
-All decisions (thresholds, paths, patterns) live in config/iac_analysis.yaml.
-
+Preferred path: Ray Data distributed map/filter across all chunks.
+Fallback:       sequential chunk-at-a-time processing (original behaviour).
 """
 import json
 import logging
@@ -28,25 +27,23 @@ from scripts.preprocess.payload_preprocess import (
     build_prompt_rules,
     process_row,
 )
+from src.config.ray_config import init_ray, get_dataset_config
 
-# config
 CFG = yaml.safe_load((DS6_ROOT / "config/iac_analysis.yaml").read_text())
 
-# Use centralized paths when available
 try:
     from src.config.paths import get_ds6_raw_dir, get_ds6_processed_dir, LOGS_DIR
-    RAW = get_ds6_raw_dir()
+    RAW  = get_ds6_raw_dir()
     PROC = get_ds6_processed_dir()
     LOGS = LOGS_DIR
 except ImportError:
-    RAW = DS6_ROOT / CFG["paths"]["raw_dir"]
+    RAW  = DS6_ROOT / CFG["paths"]["raw_dir"]
     PROC = DS6_ROOT / CFG["paths"]["processed_dir"]
     LOGS = DS6_ROOT / CFG["paths"]["logs_dir"]
 
 PROC.mkdir(parents=True, exist_ok=True)
 LOGS.mkdir(parents=True, exist_ok=True)
 
-# logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -57,18 +54,16 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# builds compiled objects once
 REDACTORS    = build_redactors(CFG)
 PROMPT_RULES = build_prompt_rules(CFG)
 
-# validation
-# verifies that the assistant content is valid JSON
+
+# ── validation ────────────────────────────────────────────────────────
 def validate(record: dict) -> tuple[bool, str]:
     """
     Round-trip check on the assistant content:
       1. Must be valid JSON.
       2. manifest_content inside must be valid YAML.
-    This catches any escaping bugs before writing to disk.
     """
     try:
         parsed   = json.loads(record["messages"][1]["content"])
@@ -82,8 +77,50 @@ def validate(record: dict) -> tuple[bool, str]:
     except KeyError as e:
         return False, f"missing_key:{e}"
 
-def process_chunk(chunk_path: Path, out_fh, stats: Counter) -> None:
-    """Read one parquet chunk and write valid training records to the output file."""
+
+# ── per-row transform used by both paths ──────────────────────────────
+def _transform_row(row: dict) -> dict | None:
+    """Process + validate a single row; return the record or None."""
+    record, status = process_row(row, CFG, REDACTORS, PROMPT_RULES)
+    if status != "ok":
+        return None
+    ok, _ = validate(record)
+    return record if ok else None
+
+
+# ── Ray Data path ─────────────────────────────────────────────────────
+def _run_ray(out_path: Path) -> Counter:
+    import ray
+    import ray.data
+
+    init_ray()
+    log.info("Ray Data path — reading parquet from %s", RAW)
+
+    ray_ds = ray.data.read_parquet(str(RAW))
+
+    processed = (
+        ray_ds
+        .map(lambda row: _transform_row(row))
+        .filter(lambda r: r is not None)
+    )
+
+    records = processed.take_all()
+
+    stats: Counter = Counter()
+    stats["total"] = ray_ds.count()
+
+    with open(out_path, "w", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            stats["written"] += 1
+
+    stats["dropped"] = stats["total"] - stats["written"]
+    return stats
+
+
+# ── Sequential fallback ──────────────────────────────────────────────
+def _process_chunk_seq(chunk_path: Path, out_fh, stats: Counter) -> None:
+    """Read one parquet chunk and write valid training records."""
     for row in pq.read_table(chunk_path).to_pylist():
         stats["total"] += 1
 
@@ -100,27 +137,36 @@ def process_chunk(chunk_path: Path, out_fh, stats: Counter) -> None:
         out_fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         stats["written"] += 1
 
-def run() -> None:
-    # finds all parquet files written by the download script
+
+def _run_sequential(out_path: Path) -> Counter:
     chunks = sorted(RAW.glob("chunk_*.parquet"))
     assert chunks, f"No parquet chunks in {RAW} — run download script first."
 
-    out_path = PROC / "training_records.jsonl"
-    # tracks totals like how many read, written and dropped
-    stats    = Counter()
-    t0       = time.time()
-
-    log.info("Processing %d chunks → %s", len(chunks), out_path)
+    stats: Counter = Counter()
+    log.info("Sequential path — processing %d chunks → %s", len(chunks), out_path)
 
     with open(out_path, "w", encoding="utf-8") as fh:
         for chunk_path in tqdm(chunks, desc="Chunks"):
-            process_chunk(chunk_path, fh, stats)
+            _process_chunk_seq(chunk_path, fh, stats)
+
+    return stats
+
+
+# ── entry point ───────────────────────────────────────────────────────
+def run() -> None:
+    out_path = PROC / "training_records.jsonl"
+    t0 = time.time()
+
+    try:
+        stats = _run_ray(out_path)
+    except Exception as exc:
+        log.warning("Ray pipeline failed (%s), falling back to sequential", exc)
+        stats = _run_sequential(out_path)
 
     elapsed = time.time() - t0
-    n, w    = stats["total"], stats["written"]
-    pct     = lambda x: f"{x/n*100:.1f}%" if n else "n/a"
+    n, w = stats["total"], stats["written"]
+    pct = lambda x: f"{x/n*100:.1f}%" if n else "n/a"
 
-    # logs a summary showing how many rows passed and why others were dropped
     log.info("Pipeline complete in %.1fs", elapsed)
     log.info("Rows read: %d | Written: %d (%s yield)", n, w, pct(w))
     for k, v in sorted(stats.items()):

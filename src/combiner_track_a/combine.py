@@ -19,7 +19,7 @@ import logging
 import sys
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
@@ -64,24 +64,24 @@ def combine_track_a():
             log.warning(f"  File not found: {input_path} - skipping")
             continue
         
-        df = pd.read_parquet(input_path)
-        log.info(f"  Loaded {len(df)} rows")
-        log.info(f"  Columns: {df.columns.tolist()}")
+        df = pl.read_parquet(input_path)
+        log.info(f"  Loaded {df.height} rows")
+        log.info(f"  Columns: {df.columns}")
         
-        df["source_dataset"] = input_path.stem
+        df = df.with_columns(pl.lit(input_path.stem).alias("source_dataset"))
         dataframes.append(df)
     
     if not dataframes:
         raise FileNotFoundError("No input files found. Run dataset pipelines first.")
     
-    combined = pd.concat(dataframes, ignore_index=True)
-    log.info(f"Combined total: {len(combined)} rows")
+    combined = pl.concat(dataframes)
+    log.info(f"Combined total: {combined.height} rows")
     
     if "label" in combined.columns:
-        log.info(f"Label distribution:\n{combined['label'].value_counts().to_string()}")
+        log.info(f"Label distribution:\n{combined['label'].value_counts()}")
     
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(OUTPUT_FILE, engine="pyarrow", index=False)
+    combined.write_parquet(OUTPUT_FILE)
     
     log.info(f"Saved to: {OUTPUT_FILE}")
     log.info(f"File size: {OUTPUT_FILE.stat().st_size / 1024:.2f} KB")
@@ -93,5 +93,5 @@ def combine_track_a():
 if __name__ == "__main__":
     df = combine_track_a()
     print(f"\nCombination complete!")
-    print(f"Total rows: {len(df)}")
+    print(f"Total rows: {df.height}")
     print(f"Output: {OUTPUT_FILE}")

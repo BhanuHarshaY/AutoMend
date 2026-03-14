@@ -13,24 +13,25 @@ Mitigation strategy — capped downsampling on iac_type:
   iac_type slice at MAX_SLICE_PCT of the total to prevent the model
   learning a strong prior toward one manifest type.
 
-  Steps:
-    1. Computes per-iac_type counts from training_records.jsonl.
-    2. Calculates a keep_ratio for each slice: min(1.0, cap / actual_pct).
-    3. Downsamples each overrepresented slice using that ratio (random, seeded).
-    4. Writes the balanced subset to training_records_balanced.jsonl.
-    5. Adds a sampling_weight field to every record (inverse frequency weight)
-       so can apply weighted loss without re-running this script.
+Uses Polars DataFrames for vectorised counting and slice analysis.
+Classify functions remain pure Python (they operate on single values).
 """
 
 import json
 import logging
 import random
 import re
+import sys
 import yaml
 from collections import defaultdict
 from pathlib import Path
 
+import polars as pl
+
 _ROOT = Path(__file__).parents[2]
+PROJECT_ROOT = _ROOT.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 (_ROOT / "logs").mkdir(exist_ok=True)
 
 logging.basicConfig(
@@ -43,13 +44,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-MIN_SLICE_PCT = 5.0   # slices below this % are flagged as underrepresented
-MAX_SLICE_PCT = 40.0  # slices above this % are downsampled during mitigation
-RANDOM_SEED   = 42    # reproducible downsampling
+MIN_SLICE_PCT = 5.0
+MAX_SLICE_PCT = 40.0
+RANDOM_SEED   = 42
 
-# slice classifiers
+
+# ── slice classifiers (pure functions, unchanged) ─────────────────────
 def classify_iac_type(manifest: str) -> str:
-    """finds what type of Kubernetes/infrastructure file"""
     c = manifest[:2000]
     if re.search(r"InferenceService|kserve",                        c): return "kserve"
     if re.search(r"seldon|SeldonDeployment",                        c): return "seldon"
@@ -58,14 +59,15 @@ def classify_iac_type(manifest: str) -> str:
     if re.search(r"apiVersion",                                      c): return "k8s_other"
     return "other"
 
+
 def classify_size_bucket(size: int) -> str:
     if size < 1_000:   return "<1KB"
     if size < 10_000:  return "1-10KB"
     if size < 100_000: return "10-100KB"
     return ">100KB"
 
+
 def classify_prompt_type(prompt: str) -> str:
-    """ analyses what kind of instruction is this prompt asking for"""
     p = prompt.lower()
     if "deploy"    in p: return "deploy"
     if "gpu"       in p: return "gpu"
@@ -78,8 +80,8 @@ def classify_prompt_type(prompt: str) -> str:
     if "config"    in p: return "config"
     return "fallback"
 
+
 def classify_license(licenses: list) -> str:
-    """ checks which license does the file use"""
     if not licenses:
         return "unknown"
     known = {"mit", "apache-2.0", "bsd-2-clause", "bsd-3-clause",
@@ -90,66 +92,104 @@ def classify_license(licenses: list) -> str:
             return l
     return "other"
 
-# slice analysis
-def build_slices(records: list[dict]) -> dict:
-    """
-    Goes through all records and count how many fall into each category
-    across all four dimensions (iac_type, license, size_bucket, prompt_type).
-    """
-    slices: dict[str, dict] = {
-        "iac_type":    defaultdict(lambda: {"count": 0, "manifest_lengths": []}),
-        "license":     defaultdict(lambda: {"count": 0, "manifest_lengths": []}),
-        "size_bucket": defaultdict(lambda: {"count": 0, "manifest_lengths": []}),
-        "prompt_type": defaultdict(lambda: {"count": 0, "manifest_lengths": []}),
+
+# ── Polars-based slicing ──────────────────────────────────────────────
+def _extract_record_fields(record: dict) -> dict | None:
+    """Pull flat fields from a training record for the slice DataFrame."""
+    msgs = record.get("messages", [])
+    meta = record.get("_meta", {})
+    if len(msgs) != 2:
+        return None
+    prompt = msgs[0].get("content", "")
+    try:
+        parsed   = json.loads(msgs[1].get("content", "{}"))
+        manifest = parsed.get("params", {}).get("manifest_content", "")
+    except Exception:
+        return None
+
+    size     = int(meta.get("size") or 0)
+    licenses = meta.get("licenses") or []
+
+    return {
+        "iac_type":        classify_iac_type(manifest),
+        "license":         classify_license(licenses),
+        "size_bucket":     classify_size_bucket(size),
+        "prompt_type":     classify_prompt_type(prompt),
+        "manifest_length": len(manifest),
     }
 
-    for record in records:
-        msgs = record.get("messages", [])
-        meta = record.get("_meta", {})
-        if len(msgs) != 2:
-            continue
-        prompt = msgs[0].get("content", "")
-        try:
-            parsed   = json.loads(msgs[1].get("content", "{}"))
-            manifest = parsed.get("params", {}).get("manifest_content", "")
-        except Exception:
-            continue
 
-        size     = int(meta.get("size") or 0)
-        licenses = meta.get("licenses") or []
-        mlen     = len(manifest)
+def build_slices(records: list[dict]) -> dict:
+    """
+    Build slice counts using a Polars DataFrame for vectorised aggregation.
+    Returns the same nested dict structure as the original (keyed by dimension → value).
+    """
+    rows = [r for rec in records if (r := _extract_record_fields(rec)) is not None]
+    if not rows:
+        return {d: {} for d in ("iac_type", "license", "size_bucket", "prompt_type")}
 
-        for dim, val in [
-            ("iac_type",    classify_iac_type(manifest)),
-            ("license",     classify_license(licenses)),
-            ("size_bucket", classify_size_bucket(size)),
-            ("prompt_type", classify_prompt_type(prompt)),
-        ]:
-            slices[dim][val]["count"]             += 1
-            slices[dim][val]["manifest_lengths"].append(mlen)
+    df = pl.DataFrame(rows)
+    slices: dict[str, dict] = {}
+
+    for dim in ("iac_type", "license", "size_bucket", "prompt_type"):
+        agg = df.group_by(dim).agg(
+            pl.col("manifest_length").count().alias("count"),
+            pl.col("manifest_length").alias("manifest_lengths"),
+        )
+        dim_slices: dict[str, dict] = {}
+        for row in agg.iter_rows(named=True):
+            val = row[dim]
+            dim_slices[val] = {
+                "count":            row["count"],
+                "manifest_lengths": row["manifest_lengths"],
+            }
+        slices[dim] = dim_slices
 
     return slices
 
+
 def summarise_slices(slices: dict, total: int) -> dict:
     """Convert raw slice data into a reportable summary with imbalance flags."""
-    summary = {}
+    summary: dict = {}
     for dim, groups in slices.items():
-        summary[dim] = {}
+        if not groups:
+            summary[dim] = {}
+            continue
+
+        rows = []
         for val, data in groups.items():
             count = data["count"]
-            pct   = round(count / total * 100, 2) if total else 0
             mlens = data["manifest_lengths"]
-            summary[dim][val] = {
-                "count":               count,
-                "pct_of_total":        pct,
-                "mean_manifest_chars": round(sum(mlens)/len(mlens), 1) if mlens else 0,
-                "underrepresented":    pct < MIN_SLICE_PCT,
-                "overrepresented":     pct > MAX_SLICE_PCT,
+            rows.append({
+                "value":          val,
+                "count":          count,
+                "mean_manifest":  round(sum(mlens) / len(mlens), 1) if mlens else 0,
+            })
+
+        df = pl.DataFrame(rows)
+        df = df.with_columns(
+            (pl.col("count") / total * 100).round(2).alias("pct_of_total")
+        ).with_columns([
+            (pl.col("pct_of_total") < MIN_SLICE_PCT).alias("underrepresented"),
+            (pl.col("pct_of_total") > MAX_SLICE_PCT).alias("overrepresented"),
+        ])
+
+        dim_summary: dict = {}
+        for row in df.iter_rows(named=True):
+            dim_summary[row["value"]] = {
+                "count":               row["count"],
+                "pct_of_total":        row["pct_of_total"],
+                "mean_manifest_chars": row["mean_manifest"],
+                "underrepresented":    row["underrepresented"],
+                "overrepresented":     row["overrepresented"],
             }
+        summary[dim] = dim_summary
+
     return summary
 
+
 def detect_imbalances(summary: dict) -> list[str]:
-    """Return a list of plain english messages describing any imbalances found."""
+    """Return plain-english messages describing any imbalances found."""
     messages = []
     for dim, groups in summary.items():
         under = [v for v, s in groups.items() if s["underrepresented"]]
@@ -160,20 +200,15 @@ def detect_imbalances(summary: dict) -> list[str]:
             messages.append(f"[{dim}] Overrepresented (>{MAX_SLICE_PCT}%): {over}")
     return messages
 
-# bias mitigation
-def compute_sampling_weight(iac_type_pct: float) -> float:
-    """
-    Calculate a weight for a record based on how common its manifest type is.
-    Records from overrepresented types get a weight below 1.0 (penalised).
-    Records from normal or rare types get weight 1.0 (no change).
-    Trainers can use these weights for weighted loss during model training.
-    """
 
+# ── bias mitigation ───────────────────────────────────────────────────
+def compute_sampling_weight(iac_type_pct: float) -> float:
     if iac_type_pct <= 0:
         return 1.0
     target_pct = min(iac_type_pct, MAX_SLICE_PCT)
     weight = target_pct / iac_type_pct
     return round(max(0.1, min(5.0, weight)), 4)
+
 
 def apply_mitigation(
     records: list[dict],
@@ -183,26 +218,19 @@ def apply_mitigation(
 ) -> dict:
     """
     Downsamples overrepresented iac_type slices to MAX_SLICE_PCT of total.
-    Adds a sampling_weight field to every record.
-    Writes the balanced subset to out_path.
-    Returns a summary of what was kept vs dropped.
+    Adds a sampling_weight field to every kept record.
     """
     rng = random.Random(RANDOM_SEED)
 
-    # computes keep_ratio per iac_type slice
     iac_counts = {
         val: data["count"]
-        for val, data in slices["iac_type"].items()
+        for val, data in slices.get("iac_type", {}).items()
     }
     keep_ratios: dict[str, float] = {}
     for val, count in iac_counts.items():
         actual_pct = count / total * 100 if total else 0
-        if actual_pct > MAX_SLICE_PCT:
-            keep_ratios[val] = MAX_SLICE_PCT / actual_pct
-        else:
-            keep_ratios[val] = 1.0
+        keep_ratios[val] = MAX_SLICE_PCT / actual_pct if actual_pct > MAX_SLICE_PCT else 1.0
 
-    # computes iac_type_pct per record for weight calculation
     iac_pcts = {
         val: (count / total * 100 if total else 0)
         for val, count in iac_counts.items()
@@ -244,28 +272,28 @@ def apply_mitigation(
             kept_by_type[iac] += 1
 
     return {
-        "strategy":          "capped_downsample_on_iac_type",
-        "max_slice_pct":     MAX_SLICE_PCT,
-        "random_seed":       RANDOM_SEED,
-        "original_total":    total,
-        "balanced_total":    kept,
-        "dropped":           dropped,
+        "strategy":            "capped_downsample_on_iac_type",
+        "max_slice_pct":       MAX_SLICE_PCT,
+        "random_seed":         RANDOM_SEED,
+        "original_total":      total,
+        "balanced_total":      kept,
+        "dropped":             dropped,
         "kept_by_iac_type":    dict(kept_by_type),
         "dropped_by_iac_type": dict(dropped_by_type),
-        "keep_ratios":       {k: round(v, 4) for k, v in keep_ratios.items()},
-        "output_path":       str(out_path),
+        "keep_ratios":         {k: round(v, 4) for k, v in keep_ratios.items()},
+        "output_path":         str(out_path),
     }
 
+
 def run_bias_detection() -> dict:
-    cfg         = yaml.safe_load((_ROOT / "config/iac_analysis.yaml").read_text())
-    in_path     = _ROOT / cfg["paths"]["processed_dir"] / "training_records.jsonl"
+    cfg           = yaml.safe_load((_ROOT / "config/iac_analysis.yaml").read_text())
+    in_path       = _ROOT / cfg["paths"]["processed_dir"] / "training_records.jsonl"
     balanced_path = _ROOT / cfg["paths"]["processed_dir"] / "training_records_balanced.jsonl"
-    out_path    = _ROOT / "logs/bias_report.json"
+    out_path      = _ROOT / "logs/bias_report.json"
 
     assert in_path.exists(), f"No training records at {in_path}"
     log.info("Loading records from %s", in_path)
 
-    # reads all training records
     records = []
     with open(in_path, encoding="utf-8") as f:
         for line in f:
@@ -280,20 +308,17 @@ def run_bias_detection() -> dict:
     total = len(records)
     log.info("Analysing %d records across 4 slice dimensions", total)
 
-    # detects imbalances
     slices     = build_slices(records)
     summary    = summarise_slices(slices, total)
     imbalances = detect_imbalances(summary)
 
-    # mitigation
     log.info("Applying capped-downsample mitigation (max_slice_pct=%.0f%%)", MAX_SLICE_PCT)
     mitigation = apply_mitigation(records, slices, total, balanced_path)
     log.info(
         "Mitigation complete — kept %d / %d records → %s",
-        mitigation["balanced_total"], total, balanced_path
+        mitigation["balanced_total"], total, balanced_path,
     )
 
-    # builds and saves the final report
     report = {
         "total_records":    total,
         "min_slice_pct":    MIN_SLICE_PCT,

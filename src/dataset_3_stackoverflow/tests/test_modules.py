@@ -31,7 +31,7 @@ from data_validation import (
 from bias_detection import (
     create_slices_by_column, calculate_slice_metrics, detect_bias
 )
-import pandas as pd
+import polars as pl
 
 
 # =============================================================================
@@ -80,7 +80,7 @@ def sample_dataframe():
             "question_type": "troubleshooting" if i % 2 == 0 else "how_to",
             "complexity": "moderate" if i % 3 == 0 else "simple",
         })
-    return pd.DataFrame(records)
+    return pl.DataFrame(records)
 
 
 # =============================================================================
@@ -273,7 +273,7 @@ class TestDataValidation:
     
     def test_validate_schema_missing_columns(self):
         """Test schema validation with missing columns."""
-        df = pd.DataFrame({"question_id": [1, 2]})
+        df = pl.DataFrame({"question_id": [1, 2]})
         result = ValidationResult()
         validate_schema(df, result)
         
@@ -291,7 +291,7 @@ class TestDataValidation:
     
     def test_validate_data_quality_fails_low_rows(self):
         """Test data quality fails for insufficient rows."""
-        df = pd.DataFrame({
+        df = pl.DataFrame({
             "question_id": [1],
             "question_body": ["test"],
             "answer_body": ["answer"]
@@ -318,9 +318,10 @@ class TestBiasDetection:
     
     def test_create_slices_minimum_samples(self, sample_dataframe):
         """Test that slices below minimum are excluded."""
-        # Add a rare category
-        df = sample_dataframe.copy()
-        df.loc[0, "question_type"] = "rare_type"
+        # Add a rare category - modify first row to have rare_type
+        df = sample_dataframe.with_row_index("_idx").with_columns(
+            pl.when(pl.col("_idx") == 0).then(pl.lit("rare_type")).otherwise(pl.col("question_type")).alias("question_type")
+        ).drop("_idx")
         
         slices = create_slices_by_column(df, "question_type", min_samples=100)
         assert "rare_type" not in slices
@@ -373,7 +374,7 @@ class TestEdgeCases:
     
     def test_empty_dataframe(self):
         """Test handling of empty DataFrame."""
-        df = pd.DataFrame()
+        df = pl.DataFrame()
         result = ValidationResult()
         validate_schema(df, result)
         
@@ -400,7 +401,7 @@ class TestEdgeCases:
     
     def test_none_values_in_dataframe(self):
         """Test handling of None values."""
-        df = pd.DataFrame({
+        df = pl.DataFrame({
             "question_id": [1, 2, None],
             "question_body": ["test", None, "test2"],
             "answer_body": ["ans", "ans2", "ans3"]

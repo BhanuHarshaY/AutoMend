@@ -7,7 +7,7 @@ import pytest
 import json
 import sys
 from pathlib import Path
-import pandas as pd
+import polars as pl
 
 # Setup paths
 TEST_DIR = Path(__file__).resolve().parent
@@ -92,21 +92,21 @@ def test_load_server_usage():
     df = load_server_usage()
     assert "cpu_util_percent" in df.columns
     assert "mem_util_percent" in df.columns
-    assert len(df) > 0
+    assert df.height > 0
 
 def test_load_batch_task():
     """batch_task should load with correct columns"""
     df = load_batch_task()
     assert "status" in df.columns
     assert "plan_cpu" in df.columns
-    assert len(df) > 0
+    assert df.height > 0
 
 def test_load_server_event():
     """server_event should load with correct columns"""
     df = load_server_event()
     assert "event_type" in df.columns
     assert "machine_id" in df.columns
-    assert len(df) > 0
+    assert df.height > 0
 
 
 # ── Class Balancing Tests ─────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ def test_bias_detection_runs():
     csv_path = RAW_DIR / "batch_task_sample.csv"
     if not csv_path.exists():
         pytest.skip(f"Raw file not found: {csv_path}")
-    df = pd.read_csv(csv_path, header=None, names=[
+    df = pl.read_csv(csv_path, has_header=False, new_columns=[
         "start_time", "end_time", "inst_num", "task_type",
         "job_id", "status", "plan_cpu", "plan_mem"
     ])

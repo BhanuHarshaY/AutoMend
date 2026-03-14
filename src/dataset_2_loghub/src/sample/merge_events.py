@@ -12,7 +12,7 @@ DS2_SRC = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DS2_SRC))
 from utils.paths import get_ds2_processed_dir
 
-import pandas as pd
+import polars as pl
 from utils.io import read_parquet, write_parquet
 from utils.hashing import stable_hash
 from utils.logger import get_logger
@@ -28,7 +28,6 @@ SYSTEMS = ["linux", "hpc", "hdfs", "hadoop", "spark"]
 
 
 def merge_events(normalized_dir: Path = NORMALIZED_DIR, output_path: Path = OUTPUT):
-    # 1. Merge all normalized files
     frames = []
     for system in SYSTEMS:
         path = normalized_dir / f"{system}.parquet"
@@ -36,27 +35,30 @@ def merge_events(normalized_dir: Path = NORMALIZED_DIR, output_path: Path = OUTP
             raise FileNotFoundError(f"Missing normalized file: {path}")
         df = read_parquet(str(path))
         frames.append(df)
-        logger.info("Loaded %s: %d rows", system, len(df))
+        logger.info("Loaded %s: %d rows", system, df.height)
 
-    merged = pd.concat(frames, ignore_index=True)
-    logger.info("Total merged: %d rows", len(merged))
+    merged = pl.concat(frames)
+    logger.info("Total merged: %d rows", merged.height)
 
-    # 2. Use 100% of data (10% sampling commented out)
-    # def keep_row(row) -> bool:
-    #     key = f"{row['system']}:{row['raw_id']}"
+    # Use 100% of data (10% sampling commented out)
+    # def keep_row(system: str, raw_id: str) -> bool:
+    #     key = f"{system}:{raw_id}"
     #     return stable_hash(key) % 10 == 0
-    # mask = merged.apply(keep_row, axis=1)
-    # sampled = merged[mask].copy().reset_index(drop=True)
+    # merged = merged.filter(
+    #     pl.struct(["system", "raw_id"]).map_elements(
+    #         lambda r: keep_row(r["system"], r["raw_id"]), return_dtype=pl.Boolean
+    #     )
+    # )
 
-    sampled = merged.copy().reset_index(drop=True)
+    sampled = merged
 
-    pct = len(sampled) / len(merged) * 100
-    logger.info("Sampled: %d rows (%.1f%%)", len(sampled), pct)
+    pct = sampled.height / merged.height * 100
+    logger.info("Sampled: %d rows (%.1f%%)", sampled.height, pct)
 
-    # 3. Per-system counts
     logger.info("Per-system sample counts:")
-    for system, count in sampled["system"].value_counts().sort_index().items():
-        logger.info("  %s: %d", system, count)
+    counts = sampled["system"].value_counts().sort("system")
+    for row in counts.iter_rows():
+        logger.info("  %s: %d", row[0], row[1])
 
     write_parquet(sampled, str(output_path))
     logger.info("Done.")

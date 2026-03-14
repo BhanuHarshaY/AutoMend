@@ -9,6 +9,8 @@ import json
 import sys
 from pathlib import Path
 
+import polars as pl
+
 DS2_SRC = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DS2_SRC))
 from utils.paths import get_ds2_raw_dir, get_ds2_processed_dir, get_legacy_raw_dir
@@ -27,18 +29,29 @@ PROCESSED_DIR = get_ds2_processed_dir()
 INPUT  = RAW_DIR / "HPC" / "HPC_2k.log_structured.csv"
 OUTPUT = PROCESSED_DIR / "normalized" / "hpc.parquet"
 
+UNIFIED_COLS = [
+    "system", "timestamp", "severity", "source",
+    "event_id", "event_template", "message", "raw_id", "extras", "event_type",
+]
+
 
 def normalize_severity(state: str, flag: str, message: str) -> str:
-    s = str(state).lower()
-    m = str(message).lower()
-    f = str(flag).strip()
-
-    if ("unavailable" in s or f == "1"
-            or any(kw in m for kw in ("unavailable", "panic", "fatal", "error"))):
+    """Infer severity from State, Flag, and message (ERROR first, then WARN, else INFO)."""
+    state_lower = (state or "").lower()
+    msg_lower = (message or "").lower()
+    if (flag or "").strip() == "1":
         return "ERROR"
-    if (any(kw in s for kw in ("degraded", "fail", "error"))
-            or any(kw in m for kw in ("timeout", "retry", "slow"))):
-        return "WARN"
+    if "unavailable" in state_lower:
+        return "ERROR"
+    for kw in ("unavailable", "panic", "fatal", "error"):
+        if kw in msg_lower:
+            return "ERROR"
+    for kw in ("degraded", "fail", "error"):
+        if kw in state_lower:
+            return "WARN"
+    for kw in ("timeout", "retry", "slow"):
+        if kw in msg_lower:
+            return "WARN"
     return "INFO"
 
 
@@ -46,44 +59,47 @@ def normalize_hpc(input_path: Path = INPUT, output_path: Path = OUTPUT):
     logger.info("Reading %s", input_path)
     df = read_csv(str(input_path))
 
-    # Prefer LogId as raw_id; fall back to LineId if blank
-    df["raw_id"] = df.apply(
-        lambda r: r["LogId"] if str(r["LogId"]).strip() else r["LineId"], axis=1
-    )
+    state_lower = pl.col("State").str.to_lowercase()
+    msg_lower = pl.col("Content").str.to_lowercase()
 
-    # Timestamp: Unix epoch string — keep as-is to avoid float precision loss
-    df["timestamp"] = df["Time"]
+    err_expr = state_lower.str.contains("unavailable", literal=True)
+    err_expr = err_expr | (pl.col("Flag").str.strip_chars() == "1")
+    for kw in ("unavailable", "panic", "fatal", "error"):
+        err_expr = err_expr | msg_lower.str.contains(kw, literal=True)
 
-    # Source: "node-246|unix.hw"
-    df["source"] = df["Node"] + "|" + df["Component"]
+    warn_expr = pl.lit(False)
+    for kw in ("degraded", "fail", "error"):
+        warn_expr = warn_expr | state_lower.str.contains(kw, literal=True)
+    for kw in ("timeout", "retry", "slow"):
+        warn_expr = warn_expr | msg_lower.str.contains(kw, literal=True)
 
-    df["system"]         = "hpc"
-    df["message"]        = df["Content"]
-    df["event_id"]       = df["EventId"]
-    df["event_template"] = df["EventTemplate"]
-    df["severity"]       = df.apply(
-        lambda r: normalize_severity(r["State"], r["Flag"], r["Content"]), axis=1
-    )
-    df["extras"] = df.apply(
-        lambda r: json.dumps({
-            "node":      r["Node"],
-            "component": r["Component"],
-            "state":     r["State"],
-            "flag":      r["Flag"],
-        }), axis=1
-    )
-    df["event_type"] = ""
+    severity = pl.when(err_expr).then(pl.lit("ERROR")).when(warn_expr).then(pl.lit("WARN")).otherwise(pl.lit("INFO"))
 
-    unified_cols = [
-        "system", "timestamp", "severity", "source",
-        "event_id", "event_template", "message", "raw_id", "extras", "event_type",
-    ]
-    out = df[unified_cols].copy()
+    raw_id = pl.when(pl.col("LogId").str.strip_chars() != "").then(pl.col("LogId")).otherwise(pl.col("LineId"))
+    source = pl.concat_str([pl.col("Node"), pl.col("Component")], separator="|")
+
+    out = df.with_columns([
+        raw_id.alias("raw_id"),
+        pl.col("Time").alias("timestamp"),
+        source.alias("source"),
+        pl.lit("hpc").alias("system"),
+        pl.col("Content").alias("message"),
+        pl.col("EventId").alias("event_id"),
+        pl.col("EventTemplate").alias("event_template"),
+        severity.alias("severity"),
+        pl.struct([
+            pl.col("Node").alias("node"),
+            pl.col("Component").alias("component"),
+            pl.col("State").alias("state"),
+            pl.col("Flag").alias("flag"),
+        ]).map_elements(lambda s: json.dumps(dict(s)), return_dtype=pl.Utf8).alias("extras"),
+        pl.lit("").alias("event_type"),
+    ]).select(UNIFIED_COLS)
+
     write_parquet(out, str(output_path))
-    logger.info("Done — %d rows.", len(out))
+    logger.info("Done — %d rows.", out.height)
     return out
 
 
 if __name__ == "__main__":
     normalize_hpc()
-

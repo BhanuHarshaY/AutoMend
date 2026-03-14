@@ -14,7 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pytest
 
 # Add project root to path
@@ -94,18 +94,18 @@ def sample_format_a_records():
 @pytest.fixture
 def sample_parquet_ds1(tmp_interim_dir, sample_format_a_records):
     """Create sample Parquet file for Dataset 1 (Alibaba)."""
-    df = pd.DataFrame(sample_format_a_records[:3])
+    df = pl.DataFrame(sample_format_a_records[:3])
     path = tmp_interim_dir / "ds1_alibaba.parquet"
-    df.to_parquet(path, engine="pyarrow", index=False)
+    df.write_parquet(path)
     return path
 
 
 @pytest.fixture
 def sample_parquet_ds2(tmp_interim_dir, sample_format_a_records):
     """Create sample Parquet file for Dataset 2 (Loghub)."""
-    df = pd.DataFrame(sample_format_a_records[2:])
+    df = pl.DataFrame(sample_format_a_records[2:])
     path = tmp_interim_dir / "ds2_loghub.parquet"
-    df.to_parquet(path, engine="pyarrow", index=False)
+    df.write_parquet(path)
     return path
 
 
@@ -210,8 +210,8 @@ def malformed_jsonl_file(tmp_interim_dir):
 def empty_parquet_file(tmp_interim_dir):
     """Create an empty Parquet file."""
     path = tmp_interim_dir / "empty.parquet"
-    df = pd.DataFrame(columns=["sequence_ids", "label"])
-    df.to_parquet(path, engine="pyarrow", index=False)
+    df = pl.DataFrame(schema={"sequence_ids": pl.List(pl.Int64), "label": pl.Int64})
+    df.write_parquet(path)
     return path
 
 

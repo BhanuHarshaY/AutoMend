@@ -8,15 +8,25 @@ Validates every training record in training_records.jsonl:
   - Content length within bounds
 
 Writes logs/schema_report.json with per-field statistics.
+
+Uses Polars DataFrames for aggregate statistics computation
+while keeping the per-record validation logic in pure Python.
 """
 
 import json
 import logging
 import re
+import sys
 import yaml
 from pathlib import Path
 
+import polars as pl
+
 _ROOT = Path(__file__).parents[2]
+PROJECT_ROOT = _ROOT.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+(_ROOT / "logs").mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +38,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# schema rules
 REQUIRED_TOP_KEYS  = {"messages", "_meta"}
 REQUIRED_META_KEYS = {"hexsha", "path", "size", "licenses"}
 PII_PATTERNS = [
@@ -37,37 +46,31 @@ PII_PATTERNS = [
     re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"),
 ]
 
+
 def validate_record(record: dict) -> tuple[bool, list[str]]:
     """
     Check one training record against all validation rules.
-    Returns (True, []) if valid.
-    Returns (False, [list of what's wrong]) if invalid.
+    Returns (True, []) if valid, (False, [violations]) otherwise.
     """
     violations: list[str] = []
 
-    # check if the top level keys exist
     for k in REQUIRED_TOP_KEYS:
         if k not in record:
             violations.append(f"missing_top_key:{k}")
 
-    # checks the messages structure
     msgs = record.get("messages", [])
     if len(msgs) != 2:
         violations.append(f"wrong_message_count:{len(msgs)}")
     else:
-        # first message must be from the user
         if msgs[0].get("role") != "user":
             violations.append("first_role_not_user")
-        # second message must be from the assistant
         if msgs[1].get("role") != "assistant":
             violations.append("second_role_not_assistant")
 
-        # prompt must be non-empty string
         prompt = msgs[0].get("content", "")
         if not isinstance(prompt, str) or not prompt.strip():
             violations.append("empty_prompt")
 
-        # assistant content must be valid JSON
         assistant = msgs[1].get("content", "")
         try:
             parsed = json.loads(assistant)
@@ -76,26 +79,21 @@ def validate_record(record: dict) -> tuple[bool, list[str]]:
             parsed = None
 
         if parsed is not None:
-
-            # must have correct tool call structure
             if parsed.get("tool") != "apply_manifest":
                 violations.append("wrong_tool_name")
             manifest = parsed.get("params", {}).get("manifest_content", "")
             if not manifest:
                 violations.append("empty_manifest_content")
             else:
-                # manifest must be valid YAML
                 try:
                     yaml.safe_load(manifest)
                 except yaml.YAMLError as e:
                     violations.append(f"manifest_invalid_yaml:{e}")
 
-                # PII check should have been redacted
                 for pat in PII_PATTERNS:
                     if pat.search(manifest):
                         violations.append(f"pii_leaked:{pat.pattern[:20]}")
 
-    # checks if the metadata block has all required keys
     meta = record.get("_meta", {})
     for k in REQUIRED_META_KEYS:
         if k not in meta:
@@ -103,40 +101,53 @@ def validate_record(record: dict) -> tuple[bool, list[str]]:
 
     return len(violations) == 0, violations
 
-def compute_stats(records: list[dict]) -> dict:
-    """Compute aggregate statistics over all valid records."""
-    prompt_lengths, manifest_lengths, sizes = [], [], []
 
-    for r in records:
-        msgs = r.get("messages", [])
-        if len(msgs) == 2:
-            prompt_lengths.append(len(msgs[0].get("content", "")))
-            try:
-                parsed = json.loads(msgs[1].get("content", "{}"))
-                mc = parsed.get("params", {}).get("manifest_content", "")
-                manifest_lengths.append(len(mc))
-            except Exception:
-                pass
-        size = (r.get("_meta") or {}).get("size") or 0
-        if size:
-            sizes.append(size)
-
-    def _stats(vals):
-        if not vals:
-            return {}
-        return {
-            "count":  len(vals),
-            "min":    min(vals),
-            "max":    max(vals),
-            "mean":   round(sum(vals) / len(vals), 1),
-            "median": sorted(vals)[len(vals) // 2],
-        }
+def _extract_stats_row(record: dict) -> dict | None:
+    """Extract numeric fields from a valid record for Polars aggregation."""
+    msgs = record.get("messages", [])
+    if len(msgs) != 2:
+        return None
+    try:
+        parsed = json.loads(msgs[1].get("content", "{}"))
+        manifest = parsed.get("params", {}).get("manifest_content", "")
+    except Exception:
+        manifest = ""
 
     return {
-        "prompt_length_chars":   _stats(prompt_lengths),
-        "manifest_length_chars": _stats(manifest_lengths),
-        "source_file_size":      _stats(sizes),
+        "prompt_length":   len(msgs[0].get("content", "")),
+        "manifest_length": len(manifest),
+        "source_size":     int((record.get("_meta") or {}).get("size") or 0),
     }
+
+
+def compute_stats_polars(valid_records: list[dict]) -> dict:
+    """Compute aggregate statistics over valid records using Polars."""
+    rows = [r for rec in valid_records if (r := _extract_stats_row(rec)) is not None]
+    if not rows:
+        return {
+            "prompt_length_chars": {},
+            "manifest_length_chars": {},
+            "source_file_size": {},
+        }
+
+    df = pl.DataFrame(rows)
+
+    def _col_stats(col: str) -> dict:
+        s = df.select(
+            pl.col(col).count().alias("count"),
+            pl.col(col).min().alias("min"),
+            pl.col(col).max().alias("max"),
+            pl.col(col).mean().round(1).alias("mean"),
+            pl.col(col).median().alias("median"),
+        ).row(0, named=True)
+        return {k: v for k, v in s.items() if v is not None}
+
+    return {
+        "prompt_length_chars":   _col_stats("prompt_length"),
+        "manifest_length_chars": _col_stats("manifest_length"),
+        "source_file_size":      _col_stats("source_size"),
+    }
+
 
 def run_validation() -> dict:
     import yaml as _yaml
@@ -148,7 +159,7 @@ def run_validation() -> dict:
     assert in_path.exists(), f"No training records at {in_path}"
     log.info("Validating %s", in_path)
 
-    records, valid_records = [], []
+    valid_records: list[dict] = []
     violation_counts: dict[str, int] = {}
     total = valid = invalid = 0
 
@@ -175,9 +186,8 @@ def run_validation() -> dict:
                 for v in violations:
                     violation_counts[v] = violation_counts.get(v, 0) + 1
 
-            records.append(record)
+    stats = compute_stats_polars(valid_records)
 
-    stats = compute_stats(valid_records)
     report = {
         "total":            total,
         "valid":            valid,

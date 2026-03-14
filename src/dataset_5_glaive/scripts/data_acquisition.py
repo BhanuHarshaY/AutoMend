@@ -1,6 +1,6 @@
 """
 Data Acquisition Script for Glaive Function Calling v2
-Streams dataset from HuggingFace and saves a reproducible sample.
+Streams dataset from HuggingFace via Ray Data and saves a reproducible sample.
 """
 
 import json
@@ -16,61 +16,66 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Logging setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-#  Config 
 load_dotenv()
 
 DATASET_NAME = "glaiveai/glaive-function-calling-v2"
-SAMPLE_SIZE  = 5000
-RANDOM_SEED  = 42
 
 try:
     from src.config.paths import get_ds5_raw_dir
+    from src.config.ray_config import init_ray, get_dataset_config
     RAW_DIR = get_ds5_raw_dir()
 except ImportError:
     RAW_DIR = Path(__file__).resolve().parents[1] / "data" / "raw"
 
-OUTPUT_FILE  = RAW_DIR / "glaive_raw.jsonl"
+    def init_ray(**kw):
+        pass
+
+    def get_dataset_config(_):
+        return {"sample_size": 5000}
+
+OUTPUT_FILE = RAW_DIR / "glaive_raw.jsonl"
 
 
 def fetch_and_save(
     dataset_name: str = DATASET_NAME,
-    sample_size: int = SAMPLE_SIZE,
+    sample_size: int | None = None,
     output_file: Path = OUTPUT_FILE,
 ) -> int:
     """
-    Stream dataset from HuggingFace, sample, and save as JSONL.
+    Stream dataset from HuggingFace, optionally using Ray Data for
+    distributed download + parse. Falls back to sequential collection.
     Returns number of records saved.
     """
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    cfg = get_dataset_config("ds5")
+    if sample_size is None:
+        sample_size = cfg.get("sample_size", 5000)
 
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("Starting streaming from HuggingFace: %s", dataset_name)
 
     try:
-        dataset = load_dataset(
-            dataset_name,
-            split="train",
-            streaming=True,
-            trust_remote_code=True,
-        )
+        import ray
+        init_ray()
+        hf_ds = load_dataset(dataset_name, split="train", streaming=True, trust_remote_code=True)
+        ds = ray.data.from_huggingface(hf_ds).limit(sample_size)
+        records = ds.take_all()
+        logger.info("Collected %d records via Ray Data", len(records))
     except Exception as e:
-        logger.error("Failed to load dataset: %s", e)
-        raise
-
-    logger.info("Collecting %d samples...", sample_size)
-    records = []
-    for i, record in enumerate(dataset):
-        if i >= sample_size:
-            break
-        records.append(record)
-        if (i + 1) % 500 == 0:
-            logger.info("  Collected %d / %d records", i + 1, sample_size)
+        logger.warning("Ray Data path failed (%s), falling back to sequential", e)
+        hf_ds = load_dataset(dataset_name, split="train", streaming=True, trust_remote_code=True)
+        records = []
+        for i, record in enumerate(hf_ds):
+            if i >= sample_size:
+                break
+            records.append(record)
+            if (i + 1) % 500 == 0:
+                logger.info("  Collected %d / %d records", i + 1, sample_size)
 
     logger.info("Saving %d records to %s", len(records), output_file)
     with open(output_file, "w", encoding="utf-8") as f:
@@ -83,4 +88,4 @@ def fetch_and_save(
 
 if __name__ == "__main__":
     count = fetch_and_save()
-    print(f"\n Successfully saved {count} records to {OUTPUT_FILE}")
+    print(f"\nSuccessfully saved {count} records to {OUTPUT_FILE}")

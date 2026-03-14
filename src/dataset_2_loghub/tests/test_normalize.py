@@ -15,7 +15,7 @@ sys.path.insert(0, str(DS2_ROOT))
 sys.path.insert(0, str(DS2_ROOT / "src"))
 
 import json
-import pandas as pd
+import polars as pl
 import pytest
 
 UNIFIED_COLS = [
@@ -28,7 +28,7 @@ UNIFIED_COLS = [
 
 class TestNormalizeLinux:
     def _make_df(self, content="normal startup", level="combo"):
-        return pd.DataFrame([{
+        return pl.DataFrame([{
             "LineId": "1", "Month": "Jun", "Date": "14", "Time": "15:16:01",
             "Level": level, "Component": "sshd", "PID": "1234",
             "Content": content,
@@ -45,26 +45,31 @@ class TestNormalizeLinux:
         from normalize.normalize_linux import normalize_linux as _nl
         import io
         df_in = self._make_df()
-        # Call internal logic directly
-        df_in["timestamp"] = df_in["Month"] + " " + df_in["Date"] + " " + df_in["Time"]
-        df_in["system"] = "linux"
-        df_in["raw_id"] = df_in["LineId"]
-        df_in["source"] = df_in["Component"]
-        df_in["message"] = df_in["Content"]
-        df_in["event_id"] = df_in["EventId"]
-        df_in["event_template"] = df_in["EventTemplate"]
-        df_in["event_type"] = ""
-        df_in["extras"] = df_in.apply(
-            lambda r: json.dumps({"pid": r["PID"], "level_raw": r["Level"]}), axis=1
-        )
+        # Call internal logic directly (Polars)
+        df_in = df_in.with_columns([
+            (pl.col("Month") + " " + pl.col("Date") + " " + pl.col("Time")).alias("timestamp"),
+            pl.lit("linux").alias("system"),
+            pl.col("LineId").alias("raw_id"),
+            pl.col("Component").alias("source"),
+            pl.col("Content").alias("message"),
+            pl.col("EventId").alias("event_id"),
+            pl.col("EventTemplate").alias("event_template"),
+            pl.lit("").alias("event_type"),
+            pl.struct(["PID", "Level"]).map_elements(
+                lambda s: json.dumps({"pid": s["PID"], "level_raw": s["Level"]}),
+                return_dtype=pl.Utf8
+            ).alias("extras"),
+        ])
         from normalize.normalize_linux import normalize_severity
-        df_in["severity"] = df_in["message"].apply(normalize_severity)
-        out = df_in[UNIFIED_COLS]
+        df_in = df_in.with_columns(
+            pl.col("message").map_elements(normalize_severity, return_dtype=pl.Utf8).alias("severity")
+        )
+        out = df_in.select(UNIFIED_COLS)
         for col in UNIFIED_COLS:
             assert col in out.columns, f"Missing column: {col}"
 
     def test_timestamp_format(self):
-        row = pd.Series({"Month": "Jun", "Date": "14", "Time": "15:16:01"})
+        row = {"Month": "Jun", "Date": "14", "Time": "15:16:01"}
         ts = row["Month"] + " " + row["Date"] + " " + row["Time"]
         assert ts == "Jun 14 15:16:01"
 

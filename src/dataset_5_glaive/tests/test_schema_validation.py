@@ -3,7 +3,7 @@ Unit tests for schema validation pipeline.
 """
 
 import pytest
-import pandas as pd
+import polars as pl
 import sys
 from pathlib import Path
 
@@ -12,12 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from schema_validation import run_validation
 
 
-def _find_key(results: dict, *patterns: str) -> str:
-    """Find a key in results that contains any of the given patterns."""
-    for key in results:
+def _find_check(results: dict, *patterns: str):
+    """Find a check in results['results'] whose 'check' key contains any pattern."""
+    for r in results.get("results", []):
+        check_name = r.get("check", "")
         for pattern in patterns:
-            if pattern in key:
-                return key
+            if pattern in check_name:
+                return r
     return None
 
 
@@ -25,7 +26,7 @@ def _find_key(results: dict, *patterns: str) -> str:
 def valid_df():
     """Fixture providing a valid DataFrame matching expected schema."""
     size = 5000
-    return pd.DataFrame({
+    return pl.DataFrame({
         "system":                    ["SYSTEM: test"] * size,
         "chat":                      ["USER: hello ASSISTANT: hi"] * size,
         "num_turns":                 [1] * size,
@@ -49,7 +50,7 @@ class TestRunValidation:
     def test_valid_df_passes_all(self, valid_df):
         """Test valid DataFrame passes all expectations."""
         results = run_validation(valid_df)
-        assert all(results.values())
+        assert results["all_passed"] is True
 
     def test_returns_dict(self, valid_df):
         """Test validation returns a dictionary."""
@@ -65,21 +66,21 @@ class TestRunValidation:
         """
         results = run_validation(valid_df)
         # Row count check (GE: 'row_count', simple: 'row_count_range')
-        row_key = _find_key(results, "row_count")
-        assert row_key is not None, f"No row count key found in {list(results.keys())}"
+        row_check = _find_check(results, "row_count")
+        assert row_check is not None, f"No row count check found in {[r['check'] for r in results.get('results', [])]}"
         
         # Complexity tier check (GE: 'complexity_tier_values', simple: 'values_in_set_complexity_tier')
-        complexity_key = _find_key(results, "complexity_tier")
-        assert complexity_key is not None, f"No complexity tier key found in {list(results.keys())}"
+        complexity_check = _find_check(results, "complexity_tier", "allowed_complexity")
+        assert complexity_check is not None, f"No complexity tier check found in {[r['check'] for r in results.get('results', [])]}"
         
         # Null check (both use 'no_nulls_chat')
-        assert "no_nulls_chat" in results
+        assert any("no_nulls_chat" in r.get("check", "") for r in results.get("results", []))
 
     def test_invalid_complexity_fails(self, valid_df):
         """Test DataFrame with invalid complexity tier values fails."""
-        valid_df["complexity_tier"] = "invalid_tier"
+        valid_df = valid_df.with_columns(pl.lit("invalid_tier").alias("complexity_tier"))
         results = run_validation(valid_df)
-        # Find the complexity tier validation key (varies by validation method)
-        complexity_key = _find_key(results, "complexity_tier_values", "values_in_set_complexity_tier")
-        assert complexity_key is not None, f"No complexity tier key found in {list(results.keys())}"
-        assert results[complexity_key] is False or results[complexity_key] == False
+        # Find the complexity tier validation check (allowed_complexity_tier)
+        complexity_check = _find_check(results, "complexity_tier_values", "values_in_set_complexity_tier", "allowed_complexity")
+        assert complexity_check is not None, f"No complexity tier check found in {[r['check'] for r in results.get('results', [])]}"
+        assert complexity_check["success"] is False

@@ -13,12 +13,10 @@ from datetime import datetime
 from collections import Counter
 from typing import Optional
 
-import pandas as pd
-import numpy as np
+import polars as pl
 
 from config import config
 
-# Fix Windows console encoding
 if sys.platform == 'win32':
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -26,7 +24,6 @@ if sys.platform == 'win32':
     except AttributeError:
         pass
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -42,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Data Slicing Functions
 # =============================================================================
 
-def create_slices_by_column(df: pd.DataFrame, column: str, min_samples: int = None) -> dict:
+def create_slices_by_column(df: pl.DataFrame, column: str, min_samples: int = None) -> dict:
     """
     Create data slices based on a categorical column.
     
@@ -61,17 +58,17 @@ def create_slices_by_column(df: pd.DataFrame, column: str, min_samples: int = No
         logger.warning(f"Column '{column}' not found in DataFrame")
         return slices
     
-    for value in df[column].unique():
-        slice_df = df[df[column] == value]
-        if len(slice_df) >= min_samples:
+    for value in df[column].unique().to_list():
+        slice_df = df.filter(pl.col(column) == value)
+        if slice_df.height >= min_samples:
             slices[value] = slice_df
         else:
-            logger.debug(f"Slice '{value}' has only {len(slice_df)} samples (min: {min_samples})")
+            logger.debug(f"Slice '{value}' has only {slice_df.height} samples (min: {min_samples})")
     
     return slices
 
 
-def create_slices_by_tags(df: pd.DataFrame, min_samples: int = None) -> dict:
+def create_slices_by_tags(df: pl.DataFrame, min_samples: int = None) -> dict:
     """Create slices based on tags (each row can have multiple tags)."""
     min_samples = min_samples or config.SLICE_MIN_SAMPLES
     slices = {}
@@ -79,23 +76,21 @@ def create_slices_by_tags(df: pd.DataFrame, min_samples: int = None) -> dict:
     if "tags" not in df.columns:
         return slices
     
-    # Get all unique tags
     all_tags = set()
-    for tags in df["tags"]:
+    for tags in df["tags"].to_list():
         if isinstance(tags, list):
             all_tags.update(tags)
     
-    # Create slice for each tag
     for tag in all_tags:
-        mask = df["tags"].apply(lambda x: tag in x if isinstance(x, list) else False)
-        slice_df = df[mask]
-        if len(slice_df) >= min_samples:
+        mask = [tag in t if isinstance(t, list) else False for t in df["tags"].to_list()]
+        slice_df = df.filter(pl.Series(mask))
+        if slice_df.height >= min_samples:
             slices[f"tag_{tag}"] = slice_df
     
     return slices
 
 
-def create_slices_by_error_signature(df: pd.DataFrame, min_samples: int = None) -> dict:
+def create_slices_by_error_signature(df: pl.DataFrame, min_samples: int = None) -> dict:
     """Create slices based on error signatures."""
     min_samples = min_samples or config.SLICE_MIN_SAMPLES
     slices = {}
@@ -103,17 +98,15 @@ def create_slices_by_error_signature(df: pd.DataFrame, min_samples: int = None) 
     if "error_signatures" not in df.columns:
         return slices
     
-    # Get all unique error signatures
     all_errors = set()
-    for errors in df["error_signatures"]:
+    for errors in df["error_signatures"].to_list():
         if isinstance(errors, list):
             all_errors.update(errors)
     
-    # Create slice for each error type
     for error in all_errors:
-        mask = df["error_signatures"].apply(lambda x: error in x if isinstance(x, list) else False)
-        slice_df = df[mask]
-        if len(slice_df) >= min_samples:
+        mask = [error in e if isinstance(e, list) else False for e in df["error_signatures"].to_list()]
+        slice_df = df.filter(pl.Series(mask))
+        if slice_df.height >= min_samples:
             slices[f"error_{error}"] = slice_df
     
     return slices
@@ -123,7 +116,7 @@ def create_slices_by_error_signature(df: pd.DataFrame, min_samples: int = None) 
 # Bias Metrics Calculation
 # =============================================================================
 
-def calculate_slice_metrics(slice_df: pd.DataFrame, overall_df: pd.DataFrame) -> dict:
+def calculate_slice_metrics(slice_df: pl.DataFrame, overall_df: pl.DataFrame) -> dict:
     """
     Calculate metrics for a single slice compared to overall dataset.
     
@@ -131,43 +124,44 @@ def calculate_slice_metrics(slice_df: pd.DataFrame, overall_df: pd.DataFrame) ->
         dict: Metrics for the slice
     """
     metrics = {
-        "count": len(slice_df),
-        "proportion": len(slice_df) / len(overall_df),
+        "count": slice_df.height,
+        "proportion": slice_df.height / overall_df.height,
     }
     
-    # Quality score metrics
     if "quality_score" in slice_df.columns:
         metrics["quality_score"] = {
             "mean": float(slice_df["quality_score"].mean()),
-            "std": float(slice_df["quality_score"].std()),
+            "std": float(slice_df["quality_score"].std()) if slice_df.height > 1 else 0.0,
             "median": float(slice_df["quality_score"].median()),
         }
     
-    # Answer score metrics  
     if "answer_score" in slice_df.columns:
         metrics["answer_score"] = {
             "mean": float(slice_df["answer_score"].mean()),
-            "std": float(slice_df["answer_score"].std()),
+            "std": float(slice_df["answer_score"].std()) if slice_df.height > 1 else 0.0,
         }
     
-    # Text length metrics
     if "question_body" in slice_df.columns:
-        q_lengths = slice_df["question_body"].str.len()
+        q_lengths = slice_df["question_body"].str.len_bytes()
         metrics["question_length"] = {
             "mean": float(q_lengths.mean()),
-            "std": float(q_lengths.std()),
+            "std": float(q_lengths.std()) if slice_df.height > 1 else 0.0,
         }
     
     if "answer_body" in slice_df.columns:
-        a_lengths = slice_df["answer_body"].str.len()
+        a_lengths = slice_df["answer_body"].str.len_bytes()
         metrics["answer_length"] = {
             "mean": float(a_lengths.mean()),
-            "std": float(a_lengths.std()),
+            "std": float(a_lengths.std()) if slice_df.height > 1 else 0.0,
         }
     
-    # Complexity distribution
     if "complexity" in slice_df.columns:
-        metrics["complexity_distribution"] = slice_df["complexity"].value_counts(normalize=True).to_dict()
+        vc = slice_df["complexity"].value_counts()
+        total = slice_df.height
+        metrics["complexity_distribution"] = {
+            row["complexity"]: row["count"] / total
+            for row in vc.iter_rows(named=True)
+        }
     
     return metrics
 
@@ -191,14 +185,12 @@ def detect_bias(slice_metrics: dict, overall_metrics: dict, threshold: float = N
         "severity": "none",
     }
     
-    # Check quality score bias - only flag significant differences
     if "quality_score" in slice_metrics and "quality_score" in overall_metrics:
         slice_mean = slice_metrics["quality_score"]["mean"]
         overall_mean = overall_metrics["quality_score"]["mean"]
         
         if overall_mean > 0:
             diff_ratio = abs(slice_mean - overall_mean) / overall_mean
-            # Only flag if difference is substantial (> threshold)
             if diff_ratio > threshold:
                 bias_results["is_biased"] = True
                 direction = "higher" if slice_mean > overall_mean else "lower"
@@ -210,14 +202,12 @@ def detect_bias(slice_metrics: dict, overall_metrics: dict, threshold: float = N
                     "direction": direction,
                 })
     
-    # Check answer length bias - use higher threshold (50% difference)
     if "answer_length" in slice_metrics and "answer_length" in overall_metrics:
         slice_mean = slice_metrics["answer_length"]["mean"]
         overall_mean = overall_metrics["answer_length"]["mean"]
         
         if overall_mean > 0:
             diff_ratio = abs(slice_mean - overall_mean) / overall_mean
-            # Higher threshold for length - 50% difference
             if diff_ratio > 0.5:
                 bias_results["is_biased"] = True
                 direction = "longer" if slice_mean > overall_mean else "shorter"
@@ -229,12 +219,10 @@ def detect_bias(slice_metrics: dict, overall_metrics: dict, threshold: float = N
                     "direction": direction,
                 })
     
-    # Check representation bias - only very severe underrepresentation
     slice_proportion = slice_metrics.get("proportion", 0)
     slice_count = slice_metrics.get("count", 0)
     
-    # Flag only if BOTH proportion is tiny AND absolute count is low
-    if slice_proportion < 0.005 and slice_count < 20:  # Less than 0.5% AND fewer than 20 samples
+    if slice_proportion < 0.005 and slice_count < 20:
         bias_results["bias_factors"].append({
             "factor": "underrepresentation",
             "slice_proportion": round(slice_proportion, 4),
@@ -243,14 +231,13 @@ def detect_bias(slice_metrics: dict, overall_metrics: dict, threshold: float = N
         })
         bias_results["is_biased"] = True
     
-    # Determine severity based on number and magnitude of bias factors
     if bias_results["is_biased"]:
         max_diff = max([f.get("difference_ratio", 0) for f in bias_results["bias_factors"]], default=0)
         num_factors = len(bias_results["bias_factors"])
         
-        if max_diff > 0.75 or num_factors >= 3:  # 75%+ difference or multiple factors
+        if max_diff > 0.75 or num_factors >= 3:
             bias_results["severity"] = "high"
-        elif max_diff > 0.5 or num_factors >= 2:  # 50%+ difference
+        elif max_diff > 0.5 or num_factors >= 2:
             bias_results["severity"] = "medium"
         else:
             bias_results["severity"] = "low"
@@ -341,7 +328,6 @@ def run_bias_detection() -> dict:
     start_time = datetime.now()
     
     try:
-        # Load validated data
         input_path = config.validated_dir / "qa_pairs_validated.json"
         if not input_path.exists():
             input_path = config.processed_dir / "qa_pairs_processed.json"
@@ -350,45 +336,35 @@ def run_bias_detection() -> dict:
         with open(input_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         
-        df = pd.DataFrame(data)
-        logger.info(f"Loaded {len(df)} records for bias analysis")
+        df = pl.DataFrame(data)
+        logger.info(f"Loaded {df.height} records for bias analysis")
         
-        # Calculate overall metrics
         overall_metrics = calculate_slice_metrics(df, df)
         
-        # Create slices
         all_slices = {}
         
-        # Slice by question type
         all_slices.update(create_slices_by_column(df, "question_type"))
-        
-        # Slice by complexity
         all_slices.update(create_slices_by_column(df, "complexity"))
-        
-        # Slice by tags (top tags)
         all_slices.update(create_slices_by_tags(df))
-        
-        # Slice by error signatures
         all_slices.update(create_slices_by_error_signature(df))
         
-        # Slice by infrastructure component
         if "infra_components" in df.columns:
             all_infra = set()
-            for comps in df["infra_components"]:
+            for comps in df["infra_components"].to_list():
                 if isinstance(comps, list):
                     all_infra.update(comps)
             
             for infra in all_infra:
-                mask = df["infra_components"].apply(
-                    lambda x: infra in x if isinstance(x, list) else False
-                )
-                slice_df = df[mask]
-                if len(slice_df) >= config.SLICE_MIN_SAMPLES:
+                mask = [
+                    infra in c if isinstance(c, list) else False
+                    for c in df["infra_components"].to_list()
+                ]
+                slice_df = df.filter(pl.Series(mask))
+                if slice_df.height >= config.SLICE_MIN_SAMPLES:
                     all_slices[f"infra_{infra}"] = slice_df
         
         logger.info(f"Created {len(all_slices)} slices for analysis")
         
-        # Analyze each slice
         slice_analysis = {}
         biased_slices = []
         
@@ -406,10 +382,9 @@ def run_bias_detection() -> dict:
                 logger.warning(f"Bias detected in slice '{slice_name}': "
                              f"severity={bias_detection['severity']}")
         
-        # Generate report
         report = {
             "analysis_timestamp": start_time.isoformat(),
-            "total_records": len(df),
+            "total_records": df.height,
             "total_slices": len(all_slices),
             "biased_slices_count": len(biased_slices),
             "biased_slices": biased_slices,
@@ -417,34 +392,30 @@ def run_bias_detection() -> dict:
             "slice_analysis": slice_analysis,
         }
         
-        # Generate mitigation suggestions
         mitigations = suggest_mitigations(report)
         report["mitigation_suggestions"] = mitigations
         
-        # Summary statistics
         report["summary"] = {
             "bias_rate": len(biased_slices) / len(all_slices) if all_slices else 0,
             "high_severity_count": sum(
-                1 for s in slice_analysis.values() 
+                1 for s in slice_analysis.values()
                 if s["bias_detection"]["severity"] == "high"
             ),
             "medium_severity_count": sum(
-                1 for s in slice_analysis.values() 
+                1 for s in slice_analysis.values()
                 if s["bias_detection"]["severity"] == "medium"
             ),
             "low_severity_count": sum(
-                1 for s in slice_analysis.values() 
+                1 for s in slice_analysis.values()
                 if s["bias_detection"]["severity"] == "low"
             ),
         }
         
-        # Save report
         report_path = config.REPORTS_DIR / "bias" / "bias_report.json"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2, default=str)
         
-        # Save metrics file for DVC tracking
         metrics = {
             "total_slices": len(all_slices),
             "biased_slices": len(biased_slices),
@@ -463,10 +434,9 @@ def run_bias_detection() -> dict:
         logger.info(f"Bias report saved to {report_path}")
         logger.info(f"Found {len(biased_slices)} biased slices out of {len(all_slices)}")
         
-        # Log summary
         if mitigations:
             logger.info(f"Generated {len(mitigations)} mitigation suggestions")
-            for m in mitigations[:3]:  # Log first 3
+            for m in mitigations[:3]:
                 logger.info(f"  - {m['slice']}: {m['issue']} ({m['priority']} priority)")
         
         report["status"] = "success"

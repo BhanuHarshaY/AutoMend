@@ -11,7 +11,7 @@ DS2_SRC = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DS2_SRC))
 from utils.paths import get_ds2_raw_dir, get_ds2_processed_dir, get_legacy_raw_dir
 
-import pandas as pd
+import polars as pl
 from utils.io import read_csv, read_parquet, write_csv
 from utils.logger import get_logger
 
@@ -35,28 +35,28 @@ TEMPLATE_FILES = {
 
 
 def filter_templates(events_path: Path = EVENTS_PATH, output_path: Path = OUTPUT):
-    # 1. Load sampled events — get unique EventIds
     events = read_parquet(str(events_path))
-    used_ids = set(events["event_id"].unique())
+    used_ids = events["event_id"].unique().to_list()
     logger.info("Unique EventIds in sample: %d", len(used_ids))
 
-    # 2. Load all templates, tag with system
     frames = []
     for system, tpath in TEMPLATE_FILES.items():
         if not tpath.exists():
             raise FileNotFoundError(f"Missing template file: {tpath}")
         df = read_csv(str(tpath))
-        df["system"] = system
+        df = df.with_columns(pl.lit(system).alias("system"))
         frames.append(df)
-        logger.info("Loaded %s templates: %d rows", system, len(df))
+        logger.info("Loaded %s templates: %d rows", system, df.height)
 
-    all_templates = pd.concat(frames, ignore_index=True)
+    all_templates = pl.concat(frames)
 
-    # 3. Keep only templates whose EventId appears in sampled events
-    filtered = all_templates[all_templates["EventId"].isin(used_ids)].copy()
-    filtered = filtered.drop_duplicates(subset=["EventId", "system"]).reset_index(drop=True)
+    filtered = (
+        all_templates
+        .filter(pl.col("EventId").is_in(used_ids))
+        .unique(subset=["EventId", "system"])
+    )
 
-    logger.info("Filtered to %d unique templates (from %d total)", len(filtered), len(all_templates))
+    logger.info("Filtered to %d unique templates (from %d total)", filtered.height, all_templates.height)
 
     write_csv(filtered, str(output_path))
     logger.info("Done.")

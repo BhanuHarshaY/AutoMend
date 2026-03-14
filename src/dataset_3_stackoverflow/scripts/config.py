@@ -13,12 +13,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Add project root to path for centralized config
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Try to import centralized paths
 try:
     from src.config.paths import get_ds3_raw_dir, get_ds3_processed_dir, get_ds3_interim_path, LOGS_DIR, PROJECT_ROOT as CENTRAL_ROOT
     USE_CENTRAL_PATHS = True
@@ -26,19 +24,25 @@ except ImportError:
     USE_CENTRAL_PATHS = False
     CENTRAL_ROOT = None
 
+try:
+    import ray
+    from src.config.ray_config import get_dataset_config
+    _ds3_ray = get_dataset_config("ds3")
+    _RAY_CHUNK_SIZE = _ds3_ray.get("chunk_size", 100_000)
+    RAY_AVAILABLE = True
+except (ImportError, Exception):
+    _RAY_CHUNK_SIZE = 100_000
+    RAY_AVAILABLE = False
+
 
 def get_base_dir() -> Path:
     """Get the base directory for data storage."""
-    # Use centralized paths if available
     if USE_CENTRAL_PATHS:
         return PROJECT_ROOT / "data"
-    # Check if running in Airflow/Docker
     if os.environ.get("AIRFLOW_HOME"):
         return Path(os.environ["AIRFLOW_HOME"])
-    # Check if /opt/airflow exists (Docker)
     if Path("/opt/airflow").exists():
         return Path("/opt/airflow")
-    # Default to parent of scripts directory
     return Path(__file__).parent.parent
 
 
@@ -48,6 +52,9 @@ class PipelineConfig:
     
     # === Base Paths ===
     BASE_DIR: Path = field(default_factory=get_base_dir)
+    
+    # === Chunk / Ray ===
+    CHUNK_SIZE: int = _RAY_CHUNK_SIZE
     
     @property
     def DATA_DIR(self) -> Path:
@@ -134,13 +141,13 @@ class PipelineConfig:
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     
     # === Validation Thresholds ===
-    MAX_MISSING_RATIO: float = 0.1      # Max 10% missing values
-    MIN_ROWS: int = 100                  # Minimum rows required
-    MAX_DUPLICATE_RATIO: float = 0.05   # Max 5% duplicates
+    MAX_MISSING_RATIO: float = 0.1
+    MIN_ROWS: int = 100
+    MAX_DUPLICATE_RATIO: float = 0.05
     
     # === Bias Detection ===
-    BIAS_THRESHOLD: float = 0.25        # 25% performance difference threshold (was 10% - too sensitive)
-    SLICE_MIN_SAMPLES: int = 30         # Min samples per slice for analysis
+    BIAS_THRESHOLD: float = 0.25
+    SLICE_MIN_SAMPLES: int = 30
     
     def __post_init__(self):
         """Create directories if they don't exist."""
@@ -149,7 +156,6 @@ class PipelineConfig:
             dir_path.mkdir(parents=True, exist_ok=True)
 
 
-# Global config instance
 config = PipelineConfig()
 
 

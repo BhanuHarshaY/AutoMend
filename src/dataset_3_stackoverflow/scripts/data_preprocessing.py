@@ -14,12 +14,21 @@ from typing import Optional
 from datetime import datetime
 from collections import Counter
 
-import pandas as pd
-import numpy as np
+import polars as pl
 
 from config import config, ERROR_PATTERNS, INFRA_PATTERNS
 
-# Fix Windows console encoding
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    import ray
+    from src.config.ray_config import init_ray, shutdown_ray
+    RAY_AVAILABLE = True
+except ImportError:
+    RAY_AVAILABLE = False
+
 if sys.platform == 'win32':
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -27,7 +36,6 @@ if sys.platform == 'win32':
     except AttributeError:
         pass
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -73,15 +81,12 @@ def clean_text(text: str, remove_code: bool = False) -> str:
     if not text:
         return ""
     
-    # Remove URLs
     text = re.sub(r'http[s]?://\S+', '[URL]', text)
     
-    # Handle code blocks
     if remove_code:
         text = re.sub(r'```[\s\S]*?```', '', text)
         text = re.sub(r'`[^`]+`', '', text)
     
-    # Normalize whitespace
     text = normalize_whitespace(text)
     
     return text
@@ -133,18 +138,16 @@ def calculate_quality_score(row: dict) -> float:
     answer_score = row.get("answer_score", 0)
     view_count = row.get("view_count", 0)
     
-    # Text quality indicators
     q_metrics = calculate_text_metrics(row.get("question_body", ""))
     a_metrics = calculate_text_metrics(row.get("answer_body", ""))
     
-    # Weighted formula
     quality = (
-        score * 2.0 +                              # Question upvotes
-        answer_score * 3.0 +                       # Answer upvotes (more important)
-        view_count * 0.001 +                       # Popularity
-        min(q_metrics["word_count"] / 50, 2) +     # Question length (cap at 2)
-        min(a_metrics["word_count"] / 100, 3) +    # Answer length (cap at 3)
-        a_metrics["code_block_count"] * 0.5        # Code examples
+        score * 2.0 +
+        answer_score * 3.0 +
+        view_count * 0.001 +
+        min(q_metrics["word_count"] / 50, 2) +
+        min(a_metrics["word_count"] / 100, 3) +
+        a_metrics["code_block_count"] * 0.5
     )
     
     return round(quality, 2)
@@ -193,7 +196,6 @@ def preprocess_single_record(record: dict) -> Optional[dict]:
     Preprocess a single Q&A record.
     Returns None if record should be filtered out.
     """
-    # Validate required fields
     required_fields = ["question_id", "question_body", "answer_body"]
     if not all(record.get(f) for f in required_fields):
         return None
@@ -202,42 +204,34 @@ def preprocess_single_record(record: dict) -> Optional[dict]:
     answer_body = clean_text(record.get("answer_body", ""))
     combined_text = f"{record.get('title', '')} {question_body} {answer_body}"
     
-    # Filter out very short content
     if len(question_body) < 20 or len(answer_body) < 50:
         return None
     
-    # Build processed record
     processed = {
-        # Identifiers
         "question_id": record["question_id"],
-        
-        # Cleaned text
         "title": clean_text(record.get("title", "")),
         "question_body": question_body,
         "answer_body": answer_body,
-        
-        # Original metadata
         "tags": record.get("tags", []),
         "score": record.get("score", 0),
         "answer_score": record.get("answer_score", 0),
         "view_count": record.get("view_count", 0),
-        
-        # Extracted features
         "error_signatures": extract_error_signatures(combined_text),
         "infra_components": extract_infra_components(combined_text),
         "question_type": detect_question_type(question_body),
         "complexity": classify_complexity(combined_text),
-        
-        # Metrics
         "question_metrics": calculate_text_metrics(question_body),
         "answer_metrics": calculate_text_metrics(answer_body),
         "quality_score": calculate_quality_score(record),
-        
-        # Processing metadata
         "processed_at": datetime.now().isoformat(),
     }
     
     return processed
+
+
+def _process_batch_sequential(batch: list[dict]) -> list[dict]:
+    """Process a batch of records sequentially (fallback)."""
+    return [r for rec in batch if (r := preprocess_single_record(rec)) is not None]
 
 
 def run_preprocessing() -> dict:
@@ -255,7 +249,6 @@ def run_preprocessing() -> dict:
     stats = {"start_time": start_time.isoformat()}
     
     try:
-        # Load raw data
         input_path = config.raw_dir / "qa_pairs_raw.json"
         with open(input_path, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
@@ -263,59 +256,66 @@ def run_preprocessing() -> dict:
         logger.info(f"Loaded {len(raw_data)} raw records")
         stats["input_records"] = len(raw_data)
         
-        # Process each record
-        processed_data = []
-        filtered_reasons = Counter()
+        chunk_size = config.CHUNK_SIZE
+        use_ray = RAY_AVAILABLE and len(raw_data) > chunk_size
+
+        if use_ray:
+            try:
+                init_ray()
+
+                @ray.remote
+                def _process_batch_ray(batch: list[dict]) -> list[dict]:
+                    return [r for rec in batch if (r := preprocess_single_record(rec)) is not None]
+
+                batches = [raw_data[i:i + chunk_size] for i in range(0, len(raw_data), chunk_size)]
+                logger.info(f"Processing {len(batches)} batches via Ray (chunk_size={chunk_size})")
+
+                futures = [_process_batch_ray.remote(b) for b in batches]
+                batch_results = ray.get(futures)
+                processed_data = [rec for batch_result in batch_results for rec in batch_result]
+                stats["processing_mode"] = "ray"
+
+            except Exception as e:
+                logger.warning(f"Ray processing failed, falling back to sequential: {e}")
+                processed_data = _process_batch_sequential(raw_data)
+                stats["processing_mode"] = "sequential_fallback"
+        else:
+            processed_data = _process_batch_sequential(raw_data)
+            stats["processing_mode"] = "sequential"
+
+        filtered_count = len(raw_data) - len(processed_data)
+        logger.info(f"Processed {len(processed_data)} records ({filtered_count} filtered)")
         
-        for record in raw_data:
-            result = preprocess_single_record(record)
-            if result:
-                processed_data.append(result)
-            else:
-                filtered_reasons["invalid_or_short"] += 1
-        
-        logger.info(f"Processed {len(processed_data)} records ({len(raw_data) - len(processed_data)} filtered)")
-        
-        # Sort by quality score
         processed_data.sort(key=lambda x: x["quality_score"], reverse=True)
         
-        # Save processed data
         output_path = config.processed_dir / "qa_pairs_processed.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(processed_data, f, indent=2)
         
-        # Also save as DataFrame for analysis
-        df = pd.DataFrame(processed_data)
-        df.to_csv(config.processed_dir / "qa_pairs_processed.csv", index=False)
+        df = pl.DataFrame(processed_data)
+        df.write_csv(config.processed_dir / "qa_pairs_processed.csv")
         
-        # Calculate statistics
         stats.update({
             "output_records": len(processed_data),
-            "filtered_count": len(raw_data) - len(processed_data),
-            "filter_reasons": dict(filtered_reasons),
+            "filtered_count": filtered_count,
             "output_file": str(output_path),
             "status": "success"
         })
         
-        # Feature distribution stats
         if processed_data:
+            quality_scores = [r["quality_score"] for r in processed_data]
             stats["feature_stats"] = {
-                "avg_quality_score": np.mean([r["quality_score"] for r in processed_data]),
-                "error_signature_dist": Counter(
+                "avg_quality_score": sum(quality_scores) / len(quality_scores),
+                "error_signature_dist": dict(Counter(
                     sig for r in processed_data for sig in r["error_signatures"]
-                ),
-                "infra_component_dist": Counter(
+                )),
+                "infra_component_dist": dict(Counter(
                     comp for r in processed_data for comp in r["infra_components"]
-                ),
-                "question_type_dist": Counter(r["question_type"] for r in processed_data),
-                "complexity_dist": Counter(r["complexity"] for r in processed_data),
-                "tag_dist": Counter(tag for r in processed_data for tag in r["tags"]),
+                )),
+                "question_type_dist": dict(Counter(r["question_type"] for r in processed_data)),
+                "complexity_dist": dict(Counter(r["complexity"] for r in processed_data)),
+                "tag_dist": dict(Counter(tag for r in processed_data for tag in r["tags"])),
             }
-            
-            # Convert Counters to dicts for JSON serialization
-            for key in ["error_signature_dist", "infra_component_dist", 
-                       "question_type_dist", "complexity_dist", "tag_dist"]:
-                stats["feature_stats"][key] = dict(stats["feature_stats"][key])
         
         logger.info(f"Saved processed data to {output_path}")
         
@@ -329,7 +329,6 @@ def run_preprocessing() -> dict:
         stats["end_time"] = datetime.now().isoformat()
         stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
         
-        # Save stats
         stats_path = config.LOGS_DIR / "preprocessing_stats.json"
         with open(stats_path, "w") as f:
             json.dump(stats, f, indent=2, default=str)

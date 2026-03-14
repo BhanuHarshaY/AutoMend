@@ -14,6 +14,7 @@ DS2_SRC = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DS2_SRC))
 from utils.paths import get_ds2_processed_dir
 
+import polars as pl
 from utils.io import read_parquet, write_parquet
 from utils.logger import get_logger
 
@@ -22,8 +23,6 @@ logger = get_logger(__name__)
 PROCESSED_DIR = get_ds2_processed_dir()
 EVENTS_PATH = PROCESSED_DIR / "mlops_processed" / "mlops_events.parquet"
 
-# Rules: (event_type, [keywords to search in message+template combined])
-# Applied in order — first match wins
 RULES = [
     ("auth_failure",        ["authentication failure", "failed password",
                              "login failed", "pam_unix"]),
@@ -46,34 +45,49 @@ RULES = [
 ]
 
 
-def label_event_type(message: str, template: str, severity: str) -> str:
-    combined = (str(message) + " " + str(template)).lower()
-
+def label_event_type(message: str, event_template: str, severity: str) -> str:
+    """Label a single event's type from message, template, and severity."""
+    combined = f"{(message or '')} {(event_template or '')}".lower()
     for event_type, keywords in RULES:
         for kw in keywords:
             if kw in combined:
                 return event_type
-
     if severity == "INFO":
         return "normal_ops"
     return "unknown"
+
+
+def _build_event_type_expr() -> pl.Expr:
+    """Build a pl.when().then() chain from RULES (first match wins)."""
+    combined = pl.concat_str(
+        [pl.col("message").cast(pl.Utf8), pl.col("event_template").cast(pl.Utf8)],
+        separator=" ",
+    ).str.to_lowercase()
+
+    expr = pl.when(pl.lit(False)).then(pl.lit(""))
+    for event_type, keywords in RULES:
+        condition = pl.lit(False)
+        for kw in keywords:
+            condition = condition | combined.str.contains(pl.lit(kw), literal=True)
+        expr = expr.when(condition).then(pl.lit(event_type))
+
+    expr = expr.when(pl.col("severity") == "INFO").then(pl.lit("normal_ops"))
+    expr = expr.otherwise(pl.lit("unknown"))
+    return expr
 
 
 def label_event_types(events_path: Path = EVENTS_PATH):
     logger.info("Reading %s", events_path)
     df = read_parquet(str(events_path))
 
-    df["event_type"] = df.apply(
-        lambda r: label_event_type(r["message"], r["event_template"], r["severity"]),
-        axis=1
-    )
+    df = df.with_columns(_build_event_type_expr().alias("event_type"))
 
     logger.info("Event type distribution:")
-    for etype, count in df["event_type"].value_counts().items():
-        logger.info("  %s: %d", etype, count)
+    for row in df["event_type"].value_counts().iter_rows():
+        logger.info("  %s: %d", row[0], row[1])
 
     write_parquet(df, str(events_path))
-    logger.info("Done — %d rows labeled.", len(df))
+    logger.info("Done — %d rows labeled.", df.height)
     return df
 
 

@@ -16,7 +16,7 @@ if not PROCESSED_DIR.exists():
 
 import json
 from unittest.mock import patch, MagicMock
-import pandas as pd
+import polars as pl
 import pytest
 
 
@@ -71,7 +71,7 @@ class TestVerifyInputs:
 # ── generate_statistics tests ──────────────────────────────────────────────────
 
 class TestGenerateStatistics:
-    def _make_events_df(self) -> pd.DataFrame:
+    def _make_events_df(self) -> pl.DataFrame:
         rows = []
         for system in ["linux", "hpc", "hdfs", "hadoop", "spark"]:
             for i in range(10):
@@ -87,7 +87,7 @@ class TestGenerateStatistics:
                     "extras": "{}",
                     "event_type": "normal_ops",
                 })
-        return pd.DataFrame(rows)
+        return pl.DataFrame(rows)
 
     def test_statistics_report_created(self, tmp_path):
         """generate_statistics writes a statistics_report.json."""
@@ -96,23 +96,23 @@ class TestGenerateStatistics:
         df = self._make_events_df()
         events_path = tmp_path / "events.parquet"
         report_path = tmp_path / "statistics_report.json"
-        df.to_parquet(events_path, index=False)
+        df.write_parquet(events_path)
 
         result = generate_statistics(events_path=events_path, report_path=report_path)
         assert report_path.exists()
 
     def test_report_contains_statistics_key(self, tmp_path):
-        """Report JSON has 'statistics' and 'ge_validation' keys."""
+        """Report JSON has 'statistics' and 'polars_validation' keys."""
         from validate.generate_statistics import generate_statistics
 
         df = self._make_events_df()
         events_path = tmp_path / "events.parquet"
         report_path = tmp_path / "statistics_report.json"
-        df.to_parquet(events_path, index=False)
+        df.write_parquet(events_path)
 
         result = generate_statistics(events_path=events_path, report_path=report_path)
         assert "statistics" in result
-        assert "ge_validation" in result
+        assert "polars_validation" in result
 
     def test_statistics_row_count_correct(self, tmp_path):
         """Statistics report reflects actual row count."""
@@ -121,10 +121,10 @@ class TestGenerateStatistics:
         df = self._make_events_df()
         events_path = tmp_path / "events.parquet"
         report_path = tmp_path / "statistics_report.json"
-        df.to_parquet(events_path, index=False)
+        df.write_parquet(events_path)
 
         result = generate_statistics(events_path=events_path, report_path=report_path)
-        assert result["statistics"]["total_rows"] == len(df)
+        assert result["statistics"]["total_rows"] == df.height
 
     def test_statistics_all_systems_present(self, tmp_path):
         """rows_per_system covers all 5 systems."""
@@ -133,7 +133,7 @@ class TestGenerateStatistics:
         df = self._make_events_df()
         events_path = tmp_path / "events.parquet"
         report_path = tmp_path / "statistics_report.json"
-        df.to_parquet(events_path, index=False)
+        df.write_parquet(events_path)
 
         result = generate_statistics(events_path=events_path, report_path=report_path)
         systems = set(result["statistics"]["rows_per_system"].keys())

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pandas as pd
+import polars as pl
 import pytest
 
 # Add src to path for imports
@@ -31,8 +31,8 @@ class TestCombineTrackA:
         from combiner_track_a import combine
 
         # Read expected row counts
-        ds1_rows = len(pd.read_parquet(sample_parquet_ds1))
-        ds2_rows = len(pd.read_parquet(sample_parquet_ds2))
+        ds1_rows = pl.read_parquet(sample_parquet_ds1).height
+        ds2_rows = pl.read_parquet(sample_parquet_ds2).height
         expected_total = ds1_rows + ds2_rows
 
         # Patch the paths in the module
@@ -44,7 +44,7 @@ class TestCombineTrackA:
         # Run combiner
         result_df = combine.combine_track_a()
 
-        assert len(result_df) == expected_total
+        assert result_df.height == expected_total
 
     @pytest.mark.unit
     def test_combine_track_a_adds_source_column(
@@ -61,7 +61,7 @@ class TestCombineTrackA:
         result_df = combine.combine_track_a()
 
         assert "source_dataset" in result_df.columns
-        assert set(result_df["source_dataset"].unique()) == {"ds1_alibaba", "ds2_loghub"}
+        assert set(result_df["source_dataset"].unique().to_list()) == {"ds1_alibaba", "ds2_loghub"}
 
     @pytest.mark.unit
     def test_combine_track_a_preserves_schema(
@@ -97,8 +97,8 @@ class TestCombineTrackA:
         # Should still work with just one file
         result_df = combine.combine_track_a()
 
-        ds1_rows = len(pd.read_parquet(sample_parquet_ds1))
-        assert len(result_df) == ds1_rows
+        ds1_rows = pl.read_parquet(sample_parquet_ds1).height
+        assert result_df.height == ds1_rows
 
     @pytest.mark.unit
     def test_combine_track_a_raises_on_no_files(
@@ -136,5 +136,5 @@ class TestCombineTrackA:
 
         # Verify file exists and is readable
         assert output_path.exists()
-        df = pd.read_parquet(output_path)
-        assert len(df) > 0
+        df = pl.read_parquet(output_path)
+        assert df.height > 0

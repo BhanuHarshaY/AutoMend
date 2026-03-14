@@ -1,11 +1,10 @@
 """
 Export Dataset 1 (Alibaba) output to the standardized interim location.
 
+Uses Polars for native Parquet write (no pandas dependency).
+
 Reads:  data/processed/ds1_alibaba/format_a_sequences.json
 Output: data/interim/ds1_alibaba.parquet
-
-This script converts the processed JSON to Parquet and copies it to the 
-monorepo's data/interim/ folder for use by the Track A combiner.
 """
 
 import json
@@ -13,7 +12,7 @@ import logging
 import sys
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
@@ -31,34 +30,29 @@ except ImportError:
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler()],
 )
 log = logging.getLogger(__name__)
 
 
 def export_to_interim():
-    """Convert JSON sequences to Parquet and export to interim directory."""
-    log.info(f"Source: {INPUT_PATH}")
-    log.info(f"Destination: {OUTPUT_PATH}")
-    
+    log.info("Source: %s", INPUT_PATH)
+    log.info("Destination: %s", OUTPUT_PATH)
+
     if not INPUT_PATH.exists():
         raise FileNotFoundError(f"Input file not found: {INPUT_PATH}")
-    
+
     with open(INPUT_PATH, "r") as f:
         sequences = json.load(f)
-    
-    log.info(f"Loaded {len(sequences)} sequences from JSON")
-    
-    df = pd.DataFrame(sequences)
-    log.info(f"Columns: {df.columns.tolist()}")
-    
+
+    log.info("Loaded %d sequences from JSON", len(sequences))
+
+    df = pl.DataFrame(sequences)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    
-    df.to_parquet(OUTPUT_PATH, engine="pyarrow", index=False)
-    
-    log.info(f"Exported to: {OUTPUT_PATH}")
-    log.info(f"File size: {OUTPUT_PATH.stat().st_size / 1024:.2f} KB")
-    
+    df.write_parquet(str(OUTPUT_PATH))
+
+    log.info("Exported to: %s", OUTPUT_PATH)
+    log.info("File size: %.2f KB", OUTPUT_PATH.stat().st_size / 1024)
     return OUTPUT_PATH
 
 

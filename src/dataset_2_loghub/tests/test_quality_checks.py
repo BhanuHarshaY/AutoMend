@@ -18,7 +18,7 @@ if not PROCESSED_DIR.exists():
     PROCESSED_DIR = DS2_ROOT / "data_processed" / "mlops_processed"
 
 import json
-import pandas as pd
+import polars as pl
 import pytest
 
 from utils.hashing import stable_hash, should_keep
@@ -170,7 +170,7 @@ class TestOutputFiles:
         assert report["passed"], f"Validation failed: {report['errors']}"
 
     def test_events_schema(self):
-        df = pd.read_parquet(self.PROCESSED / "mlops_events.parquet")
+        df = pl.read_parquet(self.PROCESSED / "mlops_events.parquet")
         required = ["system", "timestamp", "severity", "source",
                     "event_id", "event_template", "message", "raw_id",
                     "extras", "event_type"]
@@ -178,14 +178,14 @@ class TestOutputFiles:
             assert col in df.columns, f"Missing column: {col}"
 
     def test_events_severity_values(self):
-        df = pd.read_parquet(self.PROCESSED / "mlops_events.parquet")
-        assert set(df["severity"].unique()).issubset({"INFO", "WARN", "ERROR"})
+        df = pl.read_parquet(self.PROCESSED / "mlops_events.parquet")
+        assert set(df["severity"].unique().to_list()).issubset({"INFO", "WARN", "ERROR"})
 
     def test_events_all_5_systems(self):
-        df = pd.read_parquet(self.PROCESSED / "mlops_events.parquet")
-        assert set(df["system"].unique()) == {"linux", "hpc", "hdfs", "hadoop", "spark"}
+        df = pl.read_parquet(self.PROCESSED / "mlops_events.parquet")
+        assert set(df["system"].unique().to_list()) == {"linux", "hpc", "hdfs", "hadoop", "spark"}
 
     def test_sample_pct_in_range(self):
-        df = pd.read_parquet(self.PROCESSED / "mlops_events.parquet")
-        pct = len(df) / 10_000 * 100
+        df = pl.read_parquet(self.PROCESSED / "mlops_events.parquet")
+        pct = df.height / 10_000 * 100
         assert 95 <= pct <= 100, f"Sample pct {pct:.1f}% out of expected 95-100% range"

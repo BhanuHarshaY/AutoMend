@@ -14,7 +14,7 @@ PROCESSED_DIR = PROJECT_ROOT / "data" / "processed" / "ds2_loghub" / "mlops_proc
 if not PROCESSED_DIR.exists():
     PROCESSED_DIR = DS2_ROOT / "data_processed" / "mlops_processed"
 
-import pandas as pd
+import polars as pl
 import pytest
 
 from utils.hashing import stable_hash, should_keep
@@ -27,7 +27,7 @@ UNIFIED_COLS = [
 SYSTEMS = ["linux", "hpc", "hdfs", "hadoop", "spark"]
 
 
-def _make_events_df(n_per_system: int = 200) -> pd.DataFrame:
+def _make_events_df(n_per_system: int = 200) -> pl.DataFrame:
     """Create a synthetic merged DataFrame with n rows per system."""
     rows = []
     for system in SYSTEMS:
@@ -44,7 +44,7 @@ def _make_events_df(n_per_system: int = 200) -> pd.DataFrame:
                 "extras": "{}",
                 "event_type": "",
             })
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 # ── Sampling logic ─────────────────────────────────────────────────────────────
@@ -53,32 +53,33 @@ class TestSampleLogic:
     def test_sample_keeps_roughly_10pct(self):
         """Roughly 10% of rows should be kept across 1000 rows."""
         df = _make_events_df(100)  # 500 rows total
-        mask = df.apply(
+        mask = pl.struct(["system", "raw_id"]).map_elements(
             lambda r: stable_hash(f"{r['system']}:{r['raw_id']}") % 10 == 0,
-            axis=1,
+            return_dtype=pl.Boolean,
         )
-        sampled = df[mask]
-        pct = len(sampled) / len(df) * 100
+        sampled = df.filter(mask)
+        pct = sampled.height / df.height * 100
         assert 5 <= pct <= 20, f"Expected ~10% sampled, got {pct:.1f}%"
 
     def test_sample_is_deterministic(self):
         """Running the same hash filter twice gives identical results."""
         df = _make_events_df(50)
-        def filter_fn(row):
-            return stable_hash(f"{row['system']}:{row['raw_id']}") % 10 == 0
-
-        result1 = df[df.apply(filter_fn, axis=1)].reset_index(drop=True)
-        result2 = df[df.apply(filter_fn, axis=1)].reset_index(drop=True)
-        pd.testing.assert_frame_equal(result1, result2)
+        mask = pl.struct(["system", "raw_id"]).map_elements(
+            lambda r: stable_hash(f"{r['system']}:{r['raw_id']}") % 10 == 0,
+            return_dtype=pl.Boolean,
+        )
+        result1 = df.filter(mask)
+        result2 = df.filter(mask)
+        assert result1.equals(result2)
 
     def test_sample_preserves_schema(self):
         """Sampled DataFrame has same columns as input."""
         df = _make_events_df(50)
-        mask = df.apply(
+        mask = pl.struct(["system", "raw_id"]).map_elements(
             lambda r: stable_hash(f"{r['system']}:{r['raw_id']}") % 10 == 0,
-            axis=1,
+            return_dtype=pl.Boolean,
         )
-        sampled = df[mask]
+        sampled = df.filter(mask)
         for col in UNIFIED_COLS:
             assert col in sampled.columns
 
@@ -121,14 +122,14 @@ class TestSampleOutputExists:
         path = self.PROCESSED / "mlops_events.parquet"
         if not path.exists():
             pytest.skip("Pipeline not yet run")
-        df = pd.read_parquet(path)
-        assert set(df["system"].unique()) == set(SYSTEMS)
+        df = pl.read_parquet(path)
+        assert set(df["system"].unique().to_list()) == set(SYSTEMS)
 
     def test_sampled_events_schema_complete(self):
         """Sampled events have all required columns."""
         path = self.PROCESSED / "mlops_events.parquet"
         if not path.exists():
             pytest.skip("Pipeline not yet run")
-        df = pd.read_parquet(path)
+        df = pl.read_parquet(path)
         for col in UNIFIED_COLS:
             assert col in df.columns

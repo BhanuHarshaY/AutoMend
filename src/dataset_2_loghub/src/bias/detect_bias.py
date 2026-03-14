@@ -18,7 +18,7 @@ DS2_SRC = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DS2_SRC))
 from utils.paths import get_ds2_processed_dir
 
-import pandas as pd
+import polars as pl
 from utils.io import read_parquet, write_json
 from utils.logger import get_logger
 
@@ -28,8 +28,8 @@ PROCESSED_DIR = get_ds2_processed_dir()
 EVENTS_PATH = PROCESSED_DIR / "mlops_processed" / "mlops_events.parquet"
 REPORT_PATH = PROCESSED_DIR / "mlops_processed" / "bias_report.json"
 
-BIAS_THRESHOLD_MULTIPLIER = 2.0   # flag if error_rate > 2× global mean
-MIN_DOMINANT_PCT = 0.80           # flag if one system has >80% of an event_type
+BIAS_THRESHOLD_MULTIPLIER = 2.0
+MIN_DOMINANT_PCT = 0.80
 
 
 def detect_bias(events_path: Path = EVENTS_PATH,
@@ -37,43 +37,59 @@ def detect_bias(events_path: Path = EVENTS_PATH,
     logger.info("Loading %s", events_path)
     df = read_parquet(str(events_path))
 
-    total_rows = len(df)
+    total_rows = df.height
     logger.info("Total events: %d", total_rows)
 
     # ── Slice 1: Per-system statistics ───────────────────────────────────────
-    by_system = {}
-    for system, grp in df.groupby("system"):
-        n = len(grp)
-        n_error = (grp["severity"] == "ERROR").sum()
+    by_system: dict = {}
+    systems = df["system"].unique().sort().to_list()
+    for system in systems:
+        grp = df.filter(pl.col("system") == system)
+        n = grp.height
+        n_error = grp.filter(pl.col("severity") == "ERROR").height
         error_rate = round(n_error / n, 4) if n > 0 else 0.0
-        top_event_type = grp["event_type"].value_counts().idxmax() if n > 0 else "unknown"
+
+        et_counts = grp["event_type"].value_counts().sort("count", descending=True)
+        top_event_type = et_counts["event_type"][0] if n > 0 else "unknown"
+
+        et_dist = {
+            row[0]: row[1]
+            for row in et_counts.iter_rows()
+        }
+
         by_system[system] = {
             "count": int(n),
             "pct_of_total": round(n / total_rows * 100, 2),
             "error_count": int(n_error),
             "error_rate": error_rate,
             "top_event_type": top_event_type,
-            "event_type_distribution": grp["event_type"].value_counts().to_dict(),
+            "event_type_distribution": et_dist,
         }
 
     # ── Slice 2: Severity distribution ───────────────────────────────────────
-    by_severity = df["severity"].value_counts().to_dict()
+    sev_counts = df["severity"].value_counts()
+    by_severity = {row[0]: int(row[1]) for row in sev_counts.iter_rows()}
 
     # ── Slice 3: Event type per system (pivot) ────────────────────────────────
-    event_type_per_system = {}
-    for etype, grp in df.groupby("event_type"):
-        system_dist = grp["system"].value_counts().to_dict()
-        total_etype = len(grp)
+    event_type_per_system: dict = {}
+    etypes = df["event_type"].unique().sort().to_list()
+    for etype in etypes:
+        grp = df.filter(pl.col("event_type") == etype)
+        total_etype = grp.height
+        system_dist = {
+            row[0]: int(row[1])
+            for row in grp["system"].value_counts().iter_rows()
+        }
         event_type_per_system[etype] = {
             "total": total_etype,
             "by_system": system_dist,
         }
 
     # ── Bias flags ────────────────────────────────────────────────────────────
-    flags = []
+    flags: list[dict] = []
 
-    # Flag 1: Error rate anomaly per system
-    global_error_rate = (df["severity"] == "ERROR").sum() / total_rows
+    global_error_count = df.filter(pl.col("severity") == "ERROR").height
+    global_error_rate = global_error_count / total_rows
     threshold = global_error_rate * BIAS_THRESHOLD_MULTIPLIER
     logger.info("Global error rate: %.3f | Bias threshold: %.3f", global_error_rate, threshold)
 
@@ -95,10 +111,9 @@ def detect_bias(events_path: Path = EVENTS_PATH,
             logger.warning("BIAS FLAG: %s error_rate=%.3f > threshold=%.3f",
                            system, er, threshold)
 
-    # Flag 2: Dominant system for a specific event type
     for etype, info in event_type_per_system.items():
         if info["total"] < 5:
-            continue   # skip rare types
+            continue
         for system, count in info["by_system"].items():
             pct = count / info["total"]
             if pct > MIN_DOMINANT_PCT:
@@ -128,7 +143,7 @@ def detect_bias(events_path: Path = EVENTS_PATH,
         "global_error_rate": round(global_error_rate, 4),
         "slices": {
             "by_system": by_system,
-            "by_severity": {k: int(v) for k, v in by_severity.items()},
+            "by_severity": by_severity,
             "by_event_type_per_system": event_type_per_system,
         },
         "flags": flags,

@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -29,65 +29,64 @@ class TestFormatASchema:
     @pytest.mark.unit
     def test_format_a_has_sequence_ids_column(self, sample_parquet_ds1):
         """Parquet file has sequence_ids column."""
-        df = pd.read_parquet(sample_parquet_ds1)
+        df = pl.read_parquet(sample_parquet_ds1)
         assert "sequence_ids" in df.columns
 
     @pytest.mark.unit
     def test_format_a_has_label_column(self, sample_parquet_ds1):
         """Parquet file has label column."""
-        df = pd.read_parquet(sample_parquet_ds1)
+        df = pl.read_parquet(sample_parquet_ds1)
         assert "label" in df.columns
 
     @pytest.mark.unit
     def test_format_a_sequence_ids_is_list(self, sample_parquet_ds1):
         """sequence_ids column contains list-like sequences."""
-        import numpy as np
-        df = pd.read_parquet(sample_parquet_ds1)
-        for idx, row in df.iterrows():
-            # Parquet stores lists as numpy arrays, so we accept both
-            assert isinstance(row["sequence_ids"], (list, tuple, np.ndarray)), (
-                f"Row {idx}: sequence_ids should be list-like, got {type(row['sequence_ids'])}"
+        df = pl.read_parquet(sample_parquet_ds1)
+        for idx, row in enumerate(df.iter_rows(named=True)):
+            seq = row["sequence_ids"]
+            assert isinstance(seq, (list, tuple)) or hasattr(seq, "__iter__"), (
+                f"Row {idx}: sequence_ids should be list-like, got {type(seq)}"
             )
 
     @pytest.mark.unit
     def test_format_a_sequence_ids_contains_integers(self, sample_parquet_ds1):
         """sequence_ids lists contain only integer values."""
         import numpy as np
-        df = pd.read_parquet(sample_parquet_ds1)
-        for idx, row in df.iterrows():
+        df = pl.read_parquet(sample_parquet_ds1)
+        for idx, row in enumerate(df.iter_rows(named=True)):
             for i, token in enumerate(row["sequence_ids"]):
-                # Accept Python ints, numpy integers, and floats that are whole numbers
-                is_int_type = isinstance(token, (int, np.integer))
-                is_whole_float = isinstance(token, (float, np.floating)) and float(token).is_integer()
-                assert is_int_type or is_whole_float, (
+                is_int = isinstance(token, (int, np.integer)) or (
+                    isinstance(token, (float, np.floating)) and float(token).is_integer()
+                )
+                assert is_int, (
                     f"Row {idx}, token {i}: expected integer value, got {type(token)}"
                 )
 
     @pytest.mark.unit
     def test_format_a_label_is_numeric(self, sample_parquet_ds1):
         """label column contains numeric values."""
-        df = pd.read_parquet(sample_parquet_ds1)
-        assert pd.api.types.is_numeric_dtype(df["label"]), (
+        df = pl.read_parquet(sample_parquet_ds1)
+        assert df["label"].dtype in (pl.Int64, pl.UInt64, pl.Float64, pl.Int32, pl.Float32), (
             f"label should be numeric, got {df['label'].dtype}"
         )
 
     @pytest.mark.unit
     def test_format_a_no_null_sequence_ids(self, sample_parquet_ds1):
         """sequence_ids column has no null values."""
-        df = pd.read_parquet(sample_parquet_ds1)
-        assert df["sequence_ids"].isna().sum() == 0, "Found null values in sequence_ids"
+        df = pl.read_parquet(sample_parquet_ds1)
+        assert df["sequence_ids"].null_count() == 0, "Found null values in sequence_ids"
 
     @pytest.mark.unit
     def test_format_a_no_null_labels(self, sample_parquet_ds1):
         """label column has no null values."""
-        df = pd.read_parquet(sample_parquet_ds1)
-        assert df["label"].isna().sum() == 0, "Found null values in label"
+        df = pl.read_parquet(sample_parquet_ds1)
+        assert df["label"].null_count() == 0, "Found null values in label"
 
     @pytest.mark.unit
     def test_format_a_sequence_ids_not_empty(self, sample_parquet_ds1):
         """sequence_ids lists are not empty."""
-        df = pd.read_parquet(sample_parquet_ds1)
-        for idx, row in df.iterrows():
+        df = pl.read_parquet(sample_parquet_ds1)
+        for idx, row in enumerate(df.iter_rows(named=True)):
             assert len(row["sequence_ids"]) > 0, f"Row {idx}: sequence_ids is empty"
 
 

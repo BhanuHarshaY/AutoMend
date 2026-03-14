@@ -12,7 +12,7 @@ DS2_SRC = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DS2_SRC))
 from utils.paths import get_ds2_processed_dir
 
-import pandas as pd
+import polars as pl
 from utils.io import read_parquet, write_csv
 from utils.logger import get_logger
 
@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 PROCESSED_DIR = get_ds2_processed_dir()
 EVENTS_PATH  = PROCESSED_DIR / "mlops_processed" / "mlops_events.parquet"
 OUT_DIR      = PROCESSED_DIR / "mlops_processed"
-TOP_N        = 10  # top N templates per system
+TOP_N        = 10
 
 
 def make_time_bucket(timestamp: str, system: str) -> str:
@@ -41,13 +41,12 @@ def make_time_bucket(timestamp: str, system: str) -> str:
         if len(parts) == 2:
             return parts[0] + " " + parts[1][:4]
         return ts[:9]
-    # For systems with HH:MM:SS — truncate to minute
     if " " in ts:
         date_part, time_part = ts.rsplit(" ", 1)
-        time_part = time_part.replace(",", ".")  # handle comma-millis (Hadoop)
+        time_part = time_part.replace(",", ".")
         minute = ":".join(time_part.split(":")[:2])
         return date_part + " " + minute
-    return ts[:10]  # fallback
+    return ts[:10]
 
 
 def aggregate_metrics(events_path: Path = EVENTS_PATH, out_dir: Path = OUT_DIR):
@@ -55,45 +54,58 @@ def aggregate_metrics(events_path: Path = EVENTS_PATH, out_dir: Path = OUT_DIR):
     df = read_parquet(str(events_path))
 
     # --- 1. Counts by time window ---
-    df["time_bucket"] = df.apply(
-        lambda r: make_time_bucket(r["timestamp"], r["system"]), axis=1
+    df = df.with_columns(
+        pl.struct(["timestamp", "system"])
+        .map_elements(
+            lambda r: make_time_bucket(r["timestamp"], r["system"]),
+            return_dtype=pl.Utf8,
+        )
+        .alias("time_bucket")
     )
     counts = (
-        df.groupby(["system", "severity", "event_type", "time_bucket"])
-          .size()
-          .reset_index(name="count")
-          .sort_values(["system", "time_bucket", "severity"])
+        df.group_by(["system", "severity", "event_type", "time_bucket"])
+        .len()
+        .rename({"len": "count"})
+        .sort(["system", "time_bucket", "severity"])
     )
     write_csv(counts, str(out_dir / "event_counts_by_window.csv"))
-    logger.info("event_counts_by_window: %d rows", len(counts))
+    logger.info("event_counts_by_window: %d rows", counts.height)
 
     # --- 2. Error rate by system ---
-    totals = df.groupby(["system", "time_bucket"]).size().reset_index(name="total")
-    errors = (
-        df[df["severity"] == "ERROR"]
-          .groupby(["system", "time_bucket"])
-          .size()
-          .reset_index(name="error_count")
+    totals = (
+        df.group_by(["system", "time_bucket"])
+        .len()
+        .rename({"len": "total"})
     )
-    error_rate = pd.merge(totals, errors, on=["system", "time_bucket"], how="left")
-    error_rate["error_count"]  = error_rate["error_count"].fillna(0).astype(int)
-    error_rate["error_rate"]   = (error_rate["error_count"] / error_rate["total"]).round(4)
-    error_rate = error_rate.sort_values(["system", "time_bucket"])
+    errors = (
+        df.filter(pl.col("severity") == "ERROR")
+        .group_by(["system", "time_bucket"])
+        .len()
+        .rename({"len": "error_count"})
+    )
+    error_rate = totals.join(errors, on=["system", "time_bucket"], how="left")
+    error_rate = error_rate.with_columns(
+        pl.col("error_count").fill_null(0).cast(pl.Int64),
+    ).with_columns(
+        (pl.col("error_count") / pl.col("total")).round(4).alias("error_rate"),
+    ).sort(["system", "time_bucket"])
     write_csv(error_rate, str(out_dir / "error_rate_by_system.csv"))
-    logger.info("error_rate_by_system: %d rows", len(error_rate))
+    logger.info("error_rate_by_system: %d rows", error_rate.height)
 
     # --- 3. Top N event templates per system ---
+    template_counts = (
+        df.group_by(["system", "event_id", "event_template"])
+        .len()
+        .rename({"len": "count"})
+        .sort(["system", "count"], descending=[False, True])
+    )
     top_templates = (
-        df.groupby(["system", "event_id", "event_template"])
-          .size()
-          .reset_index(name="count")
-          .sort_values(["system", "count"], ascending=[True, False])
-          .groupby("system")
-          .head(TOP_N)
-          .reset_index(drop=True)
+        template_counts
+        .group_by("system", maintain_order=True)
+        .head(TOP_N)
     )
     write_csv(top_templates, str(out_dir / "top_templates.csv"))
-    logger.info("top_templates: %d rows", len(top_templates))
+    logger.info("top_templates: %d rows", top_templates.height)
 
     logger.info("Done.")
     return counts, error_rate, top_templates

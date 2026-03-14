@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pandas as pd
+import polars as pl
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -52,7 +52,7 @@ class TestDs1ConvertToParquet:
                 df = convert_to_parquet.convert_to_parquet()
         
         assert output_path.exists()
-        assert len(df) == len(sample_format_a_records)
+        assert df.height == len(sample_format_a_records)
 
     @pytest.mark.unit
     def test_ds1_convert_preserves_schema(self, tmp_path, sample_format_a_records):
@@ -106,8 +106,8 @@ class TestExportToInterim:
         source_dir.mkdir(parents=True)
         source_file = source_dir / "event_sequences.parquet"
         
-        df = pd.DataFrame({"sequence_ids": [[1, 2, 3]], "label": [0]})
-        df.to_parquet(source_file, index=False)
+        df = pl.DataFrame({"sequence_ids": [[1, 2, 3]], "label": [0]})
+        df.write_parquet(source_file)
         
         # Create interim directory
         interim_dir = tmp_path / "data" / "interim"
@@ -121,8 +121,8 @@ class TestExportToInterim:
                 export_to_interim.export_to_interim()
         
         assert output_file.exists()
-        result = pd.read_parquet(output_file)
-        assert len(result) == 1
+        result = pl.read_parquet(output_file)
+        assert result.height == 1
 
     @pytest.mark.unit
     def test_ds3_export_copies_file(self, tmp_path, sample_format_b_records):

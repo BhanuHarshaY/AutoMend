@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,15 +44,15 @@ class TestTrackAIntegration:
         monkeypatch.setattr(combine, "OUTPUT_FILE", output_path)
 
         # Get input row counts
-        ds1_rows = len(pd.read_parquet(sample_parquet_ds1))
-        ds2_rows = len(pd.read_parquet(sample_parquet_ds2))
+        ds1_rows = pl.read_parquet(sample_parquet_ds1).height
+        ds2_rows = pl.read_parquet(sample_parquet_ds2).height
 
         # Run combiner
         result_df = combine.combine_track_a()
 
         # Verify output
         assert output_path.exists(), "Combined output file should exist"
-        assert len(result_df) == ds1_rows + ds2_rows, "Row count should equal sum of inputs"
+        assert result_df.height == ds1_rows + ds2_rows, "Row count should equal sum of inputs"
         
         # Verify schema preserved
         assert "sequence_ids" in result_df.columns
@@ -79,15 +79,15 @@ class TestTrackAIntegration:
         monkeypatch.setattr(combine, "OUTPUT_FILE", output_path)
 
         # Get original labels
-        ds1_labels = set(pd.read_parquet(sample_parquet_ds1)["label"].unique())
-        ds2_labels = set(pd.read_parquet(sample_parquet_ds2)["label"].unique())
+        ds1_labels = set(pl.read_parquet(sample_parquet_ds1)["label"].unique().to_list())
+        ds2_labels = set(pl.read_parquet(sample_parquet_ds2)["label"].unique().to_list())
         expected_labels = ds1_labels | ds2_labels
 
         # Run combiner
         result_df = combine.combine_track_a()
 
         # Verify all labels preserved
-        result_labels = set(result_df["label"].unique())
+        result_labels = set(result_df["label"].unique().to_list())
         assert result_labels == expected_labels, (
             f"Labels mismatch. Expected: {expected_labels}, Got: {result_labels}"
         )
@@ -220,7 +220,7 @@ class TestInterimToProcessedFlow:
         total_b, _ = combine_b.combine_track_b()
 
         # Both should succeed
-        assert len(df_a) > 0
+        assert df_a.height > 0
         assert total_b > 0
 
         # Both outputs should exist

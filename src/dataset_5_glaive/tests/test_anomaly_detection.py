@@ -3,7 +3,7 @@ Unit tests for anomaly detection pipeline.
 """
 
 import pytest
-import pandas as pd
+import polars as pl
 import sys
 from pathlib import Path
 
@@ -23,7 +23,7 @@ from anomaly_detection import (
 @pytest.fixture
 def healthy_df():
     """Fixture providing a healthy DataFrame with no anomalies."""
-    return pd.DataFrame({
+    return pl.DataFrame({
         "has_malformed":         [False] * 4500 + [True] * 100,
         "complexity_tier":       ["simple"] * 2000 + ["none"] * 1500 + ["complex"] * 1000 + ["moderate"] * 100,
         "num_turns":             [2] * 4600,
@@ -35,7 +35,7 @@ def healthy_df():
 @pytest.fixture
 def anomalous_df():
     """Fixture providing a DataFrame with anomalies."""
-    return pd.DataFrame({
+    return pl.DataFrame({
         "has_malformed":         [True] * 500 + [False] * 500,
         "complexity_tier":       ["none"] * 900 + ["simple"] * 100,
         "num_turns":             [15] * 1000,
@@ -69,7 +69,7 @@ class TestCheckRecordCount:
         assert result["is_anomaly"]  == False 
 
     def test_insufficient_records_fails(self):
-        small_df = pd.DataFrame({"has_malformed": [False] * 100})
+        small_df = pl.DataFrame({"has_malformed": [False] * 100})
         result = check_record_count(small_df)
         assert result["is_anomaly"]  == True
 

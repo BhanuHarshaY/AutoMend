@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,8 +47,8 @@ class TestTrackAEndToEnd:
         assert output_path.exists()
         
         # Read back and verify
-        loaded_df = pd.read_parquet(output_path)
-        assert len(loaded_df) == len(result_df)
+        loaded_df = pl.read_parquet(output_path)
+        assert loaded_df.height == result_df.height
         
         # Schema validation
         assert "sequence_ids" in loaded_df.columns
@@ -71,12 +71,12 @@ class TestTrackAEndToEnd:
 
         result_df = combine.combine_track_a()
 
-        # Check statistics
+        # Check statistics (combiner returns Polars DataFrame)
         stats = {
-            "total_rows": len(result_df),
-            "unique_labels": result_df["label"].nunique(),
-            "sources": result_df["source_dataset"].nunique(),
-            "avg_sequence_length": result_df["sequence_ids"].apply(len).mean(),
+            "total_rows": result_df.height,
+            "unique_labels": result_df["label"].n_unique(),
+            "sources": result_df["source_dataset"].n_unique(),
+            "avg_sequence_length": result_df["sequence_ids"].list.len().mean(),
         }
 
         assert stats["total_rows"] > 0, "Should have rows"
@@ -94,9 +94,11 @@ class TestTrackAEndToEnd:
         output_path = tmp_processed_dir / "track_A_combined.parquet"
 
         # Get expected label counts
-        ds1_df = pd.read_parquet(sample_parquet_ds1)
-        ds2_df = pd.read_parquet(sample_parquet_ds2)
-        expected_counts = pd.concat([ds1_df, ds2_df])["label"].value_counts()
+        ds1_df = pl.read_parquet(sample_parquet_ds1)
+        ds2_df = pl.read_parquet(sample_parquet_ds2)
+        combined = pl.concat([ds1_df, ds2_df])
+        expected_vc = combined["label"].value_counts()
+        expected_dict = dict(zip(expected_vc["label"].to_list(), expected_vc["count"].to_list()))
 
         monkeypatch.setattr(combine, "INTERIM_DIR", sample_parquet_ds1.parent)
         monkeypatch.setattr(combine, "PROCESSED_DIR", tmp_processed_dir)
@@ -104,12 +106,13 @@ class TestTrackAEndToEnd:
         monkeypatch.setattr(combine, "OUTPUT_FILE", output_path)
 
         result_df = combine.combine_track_a()
-        result_counts = result_df["label"].value_counts()
+        result_vc = result_df["label"].value_counts()
+        result_dict = dict(zip(result_vc["label"].to_list(), result_vc["count"].to_list()))
 
         # Compare distributions
-        for label in expected_counts.index:
-            assert label in result_counts.index, f"Missing label: {label}"
-            assert result_counts[label] == expected_counts[label], (
+        for label in expected_dict:
+            assert label in result_dict, f"Missing label: {label}"
+            assert result_dict[label] == expected_dict[label], (
                 f"Label {label} count mismatch"
             )
 
@@ -280,8 +283,8 @@ class TestCombinedOutputStatistics:
         from combiner_track_b import combine as combine_b
 
         # Count Track A input rows
-        ds1_rows = len(pd.read_parquet(sample_parquet_ds1))
-        ds2_rows = len(pd.read_parquet(sample_parquet_ds2))
+        ds1_rows = pl.read_parquet(sample_parquet_ds1).height
+        ds2_rows = pl.read_parquet(sample_parquet_ds2).height
         expected_track_a_rows = ds1_rows + ds2_rows
 
         # Count Track B input records
@@ -309,7 +312,7 @@ class TestCombinedOutputStatistics:
         total_b, _ = combine_b.combine_track_b()
 
         # Verify no data loss
-        assert len(result_a) == expected_track_a_rows, (
+        assert result_a.height == expected_track_a_rows, (
             f"Track A data loss: expected {expected_track_a_rows}, got {len(result_a)}"
         )
         assert total_b == expected_track_b_records, (

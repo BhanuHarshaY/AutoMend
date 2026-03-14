@@ -1,10 +1,12 @@
 """
-Validate Format A output - check sequence structure and label validity
+Validate Format A output using Polars-native validation.
 """
 import json
 import logging
 import sys
 from pathlib import Path
+
+import polars as pl
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
@@ -12,6 +14,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
     from src.config.paths import get_ds1_processed_dir, LOGS_DIR
+    from src.utils.polars_validation import (
+        validate_columns_present,
+        validate_allowed_values,
+        validate_no_nulls,
+        run_validation_suite,
+    )
     PROCESSED_DIR = get_ds1_processed_dir()
     LOG_DIR = LOGS_DIR
 except ImportError:
@@ -25,8 +33,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "validate.log", mode="a")
-    ]
+        logging.FileHandler(LOG_DIR / "validate.log", mode="a"),
+    ],
 )
 log = logging.getLogger(__name__)
 
@@ -34,15 +42,16 @@ INPUT_PATH = PROCESSED_DIR / "format_a_sequences.json"
 
 
 def validate_schema(path=INPUT_PATH):
-    log.info(f"Validating Format A schema: {path}")
-    errors = []
+    log.info("Validating Format A schema: %s", path)
 
     with open(path, "r") as f:
         sequences = json.load(f)
 
     if len(sequences) == 0:
-        errors.append("No sequences found")
+        log.error("No sequences found")
+        return False
 
+    errors = []
     for i, seq in enumerate(sequences):
         if "sequence_ids" not in seq:
             errors.append(f"Row {i}: missing sequence_ids")
@@ -60,11 +69,11 @@ def validate_schema(path=INPUT_PATH):
 
     if errors:
         for e in errors:
-            log.error(f"  {e}")
+            log.error("  %s", e)
         return False
-    else:
-        log.info(f"Validation PASSED — {len(sequences)} sequences all valid")
-        return True
+
+    log.info("Validation PASSED — %d sequences all valid", len(sequences))
+    return True
 
 
 if __name__ == "__main__":
