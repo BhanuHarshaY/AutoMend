@@ -19,15 +19,22 @@ _ROOT = Path(__file__).parents[2]
 PROJECT_ROOT = _ROOT.parent.parent
 (_ROOT / "logs").mkdir(exist_ok=True)
 
-# Ensure project root is on path for centralized alerting
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from src.config.paths import LOGS_DIR
+    _LOGS = LOGS_DIR
+except ImportError:
+    _LOGS = _ROOT / "logs"
+
+_LOGS.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
-        logging.FileHandler(_ROOT / "logs/anomaly_alerts.log"),
+        logging.FileHandler(_LOGS / "anomaly_alerts.log"),
         logging.StreamHandler(),
     ],
 )
@@ -97,8 +104,8 @@ def check_minimum_records(report: dict, minimum: int) -> tuple[bool, str]:
     return False, ""
 
 def run_anomaly_check() -> dict:
-    report_path = _ROOT / "logs/schema_report.json"
-    out_path    = _ROOT / "logs/anomaly_report.json"
+    report_path = _LOGS / "schema_report.json"
+    out_path    = _LOGS / "anomaly_report.json"
 
     assert report_path.exists(), \
         f"Schema report not found at {report_path} — run schema_stats.py first"

@@ -26,13 +26,24 @@ _ROOT = Path(__file__).parents[2]
 PROJECT_ROOT = _ROOT.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    from src.config.paths import get_ds6_processed_dir, LOGS_DIR
+    _PROC = get_ds6_processed_dir()
+    _LOGS = LOGS_DIR
+except ImportError:
+    import yaml as _yaml_init
+    _cfg_init = _yaml_init.safe_load((_ROOT / "config/iac_analysis.yaml").read_text())
+    _PROC = _ROOT / _cfg_init["paths"]["processed_dir"]
+    _LOGS = _ROOT / _cfg_init["paths"]["logs_dir"]
+
+_LOGS.mkdir(parents=True, exist_ok=True)
 (_ROOT / "logs").mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
-        logging.FileHandler(_ROOT / "logs/schema_stats.log"),
+        logging.FileHandler(_LOGS / "schema_stats.log"),
         logging.StreamHandler(),
     ],
 )
@@ -150,11 +161,9 @@ def compute_stats_polars(valid_records: list[dict]) -> dict:
 
 
 def run_validation() -> dict:
-    import yaml as _yaml
-    cfg      = _yaml.safe_load((_ROOT / "config/iac_analysis.yaml").read_text())
-    in_path  = _ROOT / cfg["paths"]["processed_dir"] / "training_records.jsonl"
-    out_path = _ROOT / "logs/schema_report.json"
-    (_ROOT / "logs").mkdir(exist_ok=True)
+    in_path  = _PROC / "training_records.jsonl"
+    out_path = _LOGS / "schema_report.json"
+    _LOGS.mkdir(parents=True, exist_ok=True)
 
     assert in_path.exists(), f"No training records at {in_path}"
     log.info("Validating %s", in_path)

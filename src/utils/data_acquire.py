@@ -15,11 +15,14 @@ Returns a dict with ``{"status": "cached"|"seeded"|"downloaded"|"error", ...}``.
 
 import importlib
 import logging
+import shutil
 import sys
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
+
+_MODE_MARKER = ".data_mode"
 
 
 def _project_root_from(raw_dir: Path) -> Path:
@@ -29,6 +32,18 @@ def _project_root_from(raw_dir: Path) -> Path:
 
 def _has_data(raw_dir: Path) -> bool:
     return raw_dir.exists() and any(raw_dir.iterdir())
+
+
+def _read_mode_marker(raw_dir: Path) -> Optional[str]:
+    marker = raw_dir / _MODE_MARKER
+    if marker.exists():
+        return marker.read_text().strip()
+    return None
+
+
+def _write_mode_marker(raw_dir: Path, mode: str) -> None:
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / _MODE_MARKER).write_text(mode + "\n")
 
 
 def ensure_data(
@@ -65,8 +80,15 @@ def ensure_data(
 
     # 1. Already present?
     if check_raw_data_exists(raw_dir, project_root=project_root):
-        logger.info("[%s] Raw data found (local or DVC). Skipping acquire.", dataset_key)
-        return {"status": "cached", "mode": mode}
+        prev_mode = _read_mode_marker(raw_dir)
+        if prev_mode == mode:
+            logger.info("[%s] Raw data found (mode=%s). Skipping acquire.", dataset_key, mode)
+            return {"status": "cached", "mode": mode}
+        logger.warning(
+            "[%s] Mode changed (%s -> %s). Clearing stale data for re-acquisition.",
+            dataset_key, prev_mode, mode,
+        )
+        shutil.rmtree(raw_dir)
 
     # 2. Acquire based on mode
     logger.info("[%s] Raw data missing — acquiring in '%s' mode.", dataset_key, mode)
@@ -78,7 +100,11 @@ def ensure_data(
 
     result = dispatcher(raw_dir, project_root, mode, cfg)
 
-    # 3. Version with DVC after successful acquisition
+    # 3. Record which mode produced this data
+    if result.get("status") not in ("error",):
+        _write_mode_marker(raw_dir, mode)
+
+    # 4. Version with DVC after successful acquisition
     if result.get("status") not in ("error",):
         try:
             version_raw_data(str(raw_dir), cwd=str(project_root))

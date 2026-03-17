@@ -406,6 +406,20 @@ report = run_validation_suite(checks)
 # {"total": 3, "passed": 3, "failed": 0, "all_passed": True, "results": [...]}
 ```
 
+### Mode-Aware Validation Thresholds
+
+Validation checks that depend on row counts or dataset size automatically adjust based on `PIPELINE_DATA_MODE`. This ensures pipelines pass in all three modes without manual threshold tweaking.
+
+| Dataset | Validation File | Threshold | `dummy` | `sample` | `full` |
+|---------|----------------|-----------|---------|----------|--------|
+| DS2 | `validate_quality.py` | Expected total rows | 250 | 10,000 | 10,000 |
+| DS2 | `validate_quality.py` | Min sampling % | 1% | 5% | 5% |
+| DS3 | `config.py` | Min rows | 10 | 100 | 100 |
+| DS5 | `schema_validation.py` | Row count range | 10-200 | 3,000-7,000 | 3,000-100,000 |
+| DS5 | `anomaly_detection.py` | Min records | 10 | 3,000 | 3,000 |
+
+DS1, DS4, and DS6 use structural or percentage-based checks that work in all modes without adjustment.
+
 ### Centralized Alerting (`src/utils/alerting.py`)
 
 All alerts flow through a unified Slack webhook system:

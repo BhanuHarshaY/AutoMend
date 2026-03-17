@@ -56,7 +56,7 @@ EXPECTED_SCHEMA = {
         "score": (0, None),
         "quality_score": (0, None),
     },
-    "row_count": {"min": 100, "max": 1000000},
+    "row_count": {"min": config.MIN_ROWS, "max": 1000000},
 }
 
 

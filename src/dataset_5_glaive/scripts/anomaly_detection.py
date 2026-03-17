@@ -18,6 +18,8 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.config.data_mode import get_data_mode
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -27,10 +29,13 @@ logger = logging.getLogger(__name__)
 PROCESSED_FILE = Path(__file__).resolve().parents[1] / "data" / "processed" / "glaive_processed.jsonl"
 ANOMALY_DIR = Path(__file__).resolve().parents[1] / "data" / "processed" / "validation"
 
+_MODE = get_data_mode()
+_MIN_RECORDS = {"dummy": 10, "sample": 3000, "full": 3000}[_MODE]
+
 THRESHOLDS = {
     "max_malformed_pct": 0.05,
     "max_none_complexity_pct": 0.60,
-    "min_records": 4000,
+    "min_records": _MIN_RECORDS,
     "max_avg_turns": 10.0,
     "max_avg_calls": 5.0,
     "min_defined_fn_pct": 0.30,

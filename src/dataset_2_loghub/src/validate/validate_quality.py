@@ -34,6 +34,7 @@ from src.utils.polars_validation import (
     validate_row_count,
     run_validation_suite,
 )
+from src.config.data_mode import get_data_mode
 
 logger = get_logger(__name__)
 
@@ -42,7 +43,19 @@ EVENTS_PATH    = PROCESSED_DIR / "mlops_processed" / "mlops_events.parquet"
 TEMPLATES_PATH = PROCESSED_DIR / "mlops_processed" / "mlops_templates.csv"
 REPORT_PATH    = PROCESSED_DIR / "mlops_processed" / "validation_report.json"
 
-TOTAL_ROWS   = 10_000
+_MODE = get_data_mode()
+TOTAL_ROWS_BY_MODE = {
+    "dummy":  250,      # 5 systems x 50 rows
+    "sample": 10_000,
+    "full":   10_000,
+}
+SAMPLING_MIN_PCT_BY_MODE = {
+    "dummy":  1,
+    "sample": 5,
+    "full":   5,
+}
+TOTAL_ROWS      = TOTAL_ROWS_BY_MODE[_MODE]
+SAMPLING_MIN_PCT = SAMPLING_MIN_PCT_BY_MODE[_MODE]
 REQUIRED_COLS = [
     "system", "timestamp", "severity", "source",
     "event_id", "event_template", "message", "raw_id", "extras", "event_type",
@@ -121,10 +134,12 @@ def validate_quality(events_path: Path = EVENTS_PATH,
     else:
         fail("event_id_pattern", eid_result["detail"])
 
-    # --- 5. Sampling sanity (5%–100%) ---
+    # --- 5. Sampling sanity ---
     pct = df.height / TOTAL_ROWS * 100
-    if not (5 <= pct <= 100):
-        fail("sampling_sanity", f"Sampled {df.height} rows = {pct:.1f}% (expected 5–100%)")
+    if not (SAMPLING_MIN_PCT <= pct <= 100):
+        fail("sampling_sanity",
+             f"Sampled {df.height} rows = {pct:.1f}% "
+             f"(expected {SAMPLING_MIN_PCT}–100% of {TOTAL_ROWS} in '{_MODE}' mode)")
     else:
         ok("sampling_sanity", f"Sampled {df.height} rows = {pct:.1f}% of {TOTAL_ROWS}")
 

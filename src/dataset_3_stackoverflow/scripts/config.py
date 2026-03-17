@@ -34,6 +34,12 @@ except (ImportError, Exception):
     _RAY_CHUNK_SIZE = 100_000
     RAY_AVAILABLE = False
 
+try:
+    from src.config.data_mode import get_data_mode
+    _DATA_MODE = get_data_mode()
+except ImportError:
+    _DATA_MODE = os.environ.get("PIPELINE_DATA_MODE", "dummy").strip().lower()
+
 
 def get_base_dir() -> Path:
     """Get the base directory for data storage."""
@@ -140,9 +146,9 @@ class PipelineConfig:
     SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     
-    # === Validation Thresholds ===
+    # === Validation Thresholds (mode-aware) ===
     MAX_MISSING_RATIO: float = 0.1
-    MIN_ROWS: int = 100
+    MIN_ROWS: int = {"dummy": 10, "sample": 100, "full": 100}.get(_DATA_MODE, 100)
     MAX_DUPLICATE_RATIO: float = 0.05
     
     # === Bias Detection ===

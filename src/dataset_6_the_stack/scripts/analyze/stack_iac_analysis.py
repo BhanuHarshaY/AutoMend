@@ -7,6 +7,7 @@ keyword frequencies, PII hit rate, and JSON-escape difficulty.
 import logging
 import re
 import json
+import sys
 import yaml
 import collections
 from pathlib import Path
@@ -16,12 +17,23 @@ from tqdm import tqdm
 
 # config
 _ROOT = Path(__file__).parents[2]
+PROJECT_ROOT = _ROOT.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 CFG   = yaml.safe_load((_ROOT / "config/iac_analysis.yaml").read_text())
 
 F    = CFG["fields"]
 KWS  = CFG["keywords"]
-RAW  = _ROOT / CFG["paths"]["raw_dir"]
-LOGS = _ROOT / CFG["paths"]["logs_dir"]
+
+try:
+    from src.config.paths import get_ds6_raw_dir, LOGS_DIR
+    RAW  = get_ds6_raw_dir()
+    LOGS = LOGS_DIR
+except ImportError:
+    RAW  = _ROOT / CFG["paths"]["raw_dir"]
+    LOGS = _ROOT / CFG["paths"]["logs_dir"]
+
 LOGS.mkdir(parents=True, exist_ok=True)
 
 # compiles PII patterns once
@@ -127,7 +139,7 @@ def analyze() -> None:
         "top_licenses":      dict(licenses.most_common(15)),
     }
 
-    out = _ROOT / CFG["paths"]["analysis_out"]
+    out = LOGS / "analysis_report.json"
     out.write_text(json.dumps(report, indent=2))
 
     # displays quick summary to the log

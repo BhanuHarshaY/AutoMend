@@ -21,6 +21,10 @@ from src.utils.polars_validation import (
     validate_row_count,
     run_validation_suite,
 )
+from src.config.data_mode import get_data_mode
+
+_MODE = get_data_mode()
+_ROW_COUNT_RANGE = {"dummy": (10, 200), "sample": (3000, 7000), "full": (3000, 100_000)}[_MODE]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +53,7 @@ GLAIVE_SCHEMA = {
         "num_calls": (0, 20),
         "num_defined_functions": (0, 20),
     },
-    "row_count_range": (4000, 6000),
+    "row_count_range": _ROW_COUNT_RANGE,
 }
 
 
