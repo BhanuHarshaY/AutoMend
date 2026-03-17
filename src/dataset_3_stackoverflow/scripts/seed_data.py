@@ -175,17 +175,22 @@ def generate_answers(questions: list[dict]) -> list[dict]:
     return answers
 
 
-def main():
-    """Generate all seed data files for DS3."""
-    print("Generating DS3 (StackOverflow) seed data...")
+def main(num_rows: int | None = None):
+    """Generate all seed data files for DS3.
+
+    Parameters
+    ----------
+    num_rows : int | None
+        Number of Q&A rows.  Defaults to 50.
+    """
+    n = num_rows if num_rows is not None else 50
+    print(f"Generating DS3 (StackOverflow) seed data ({n} rows)...")
     print(f"Output directory: {EXTERNAL_DIR}")
-    
-    # Ensure directories exist
+
     EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Generate questions
-    questions = generate_questions(50)
+
+    questions = generate_questions(n)
     
     # Write questions CSV
     with open(QUESTIONS_FILE, "w", newline="", encoding="utf-8") as f:

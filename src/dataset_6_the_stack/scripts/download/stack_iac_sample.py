@@ -30,9 +30,10 @@ DS = CFG["dataset"]
 S  = CFG["sampling"]
 F  = CFG["fields"]
 
-ds6_cfg     = get_dataset_config("ds6")
-SAMPLE_SIZE = ds6_cfg.get("sample_size", S["sample_size"])
-CHUNK_SIZE  = ds6_cfg.get("chunk_size", S["chunk_size"])
+ds6_cfg       = get_dataset_config("ds6")
+_DEFAULT_SIZE = ds6_cfg.get("sample_size", S["sample_size"])
+SAMPLE_SIZE   = _DEFAULT_SIZE
+CHUNK_SIZE    = ds6_cfg.get("chunk_size", S["chunk_size"])
 
 try:
     from src.config.paths import get_ds6_raw_dir, LOGS_DIR
@@ -150,7 +151,19 @@ def _download_sequential() -> None:
 
 
 # ── entry point ───────────────────────────────────────────────────────
-def download() -> None:
+def download(sample_size: int | None = None) -> None:
+    """Download The Stack YAML sub-corpus.
+
+    Parameters
+    ----------
+    sample_size : int | None
+        Override the default sample size.  ``0`` means no limit (full dataset).
+        ``None`` uses the configured default.
+    """
+    global SAMPLE_SIZE
+    if sample_size is not None:
+        SAMPLE_SIZE = sample_size if sample_size > 0 else float("inf")
+
     try:
         _download_ray()
     except Exception as exc:

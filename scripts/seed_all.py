@@ -4,32 +4,41 @@ Master Seed Script - Unified data seeding for E2E testing
 =========================================================
 Runs all dataset seed scripts to prepare the monorepo for E2E testing with Airflow.
 
+Respects PIPELINE_DATA_MODE environment variable:
+  dummy  (default) - generate synthetic data only (offline, fast)
+  sample           - download capped subsets from real sources (network required)
+  full             - download full datasets (network + API tokens may be required)
+
+The --download flag is kept as a convenience override: it forces 'sample' mode
+for DS2/DS5/DS6 regardless of the env var.
+
 Usage:
-    python scripts/seed_all.py              # Seed all datasets
+    python scripts/seed_all.py              # Seed using PIPELINE_DATA_MODE (default: dummy)
+    python scripts/seed_all.py --download   # Force sample-mode downloads for DS2/DS5/DS6
     python scripts/seed_all.py --ds1        # Seed only DS1
     python scripts/seed_all.py --ds1 --ds3  # Seed DS1 and DS3
-    python scripts/seed_all.py --download   # Also download external data (DS2, DS5, DS6)
-
-Prerequisites:
-    - Conda environment: mlops_project
-    - Working directory: Project root (Automend/)
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-# Project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Try to import centralized paths for directory creation
 try:
     from src.config.paths import ensure_dirs_exist
     HAS_PATHS = True
 except ImportError:
     HAS_PATHS = False
+
+try:
+    from src.config.data_mode import get_data_mode
+except ImportError:
+    def get_data_mode():
+        return os.environ.get("PIPELINE_DATA_MODE", "dummy").strip().lower()
 
 
 def run_script(script_path: Path, description: str) -> bool:
@@ -38,11 +47,11 @@ def run_script(script_path: Path, description: str) -> bool:
     print(f"Running: {description}")
     print(f"Script:  {script_path}")
     print('='*60)
-    
+
     if not script_path.exists():
         print(f"ERROR: Script not found: {script_path}")
         return False
-    
+
     try:
         result = subprocess.run(
             [sys.executable, str(script_path)],
@@ -61,82 +70,80 @@ def run_script(script_path: Path, description: str) -> bool:
         return False
 
 
-def seed_ds1() -> bool:
-    """Seed Dataset 1 (Alibaba) - generates 3 sample CSVs."""
+def seed_ds1(mode: str = "dummy") -> bool:
+    """Seed Dataset 1 (Alibaba)."""
+    if mode == "full":
+        print("\nDS1 (Alibaba): full mode — place real CSVs in data/raw/ds1_alibaba/ manually.")
+        return True
     return run_script(
         PROJECT_ROOT / "src" / "dataset_1_alibaba" / "scripts" / "seed_data.py",
-        "DS1 (Alibaba) - Generate sample CSVs"
+        f"DS1 (Alibaba) - Generate seed CSVs [{mode}]"
     )
 
 
-def seed_ds2(download: bool = False) -> bool:
-    """Seed Dataset 2 (Loghub) - downloads from GitHub if requested."""
-    if download:
+def seed_ds2(mode: str = "dummy") -> bool:
+    """Seed Dataset 2 (LogHub)."""
+    if mode == "dummy":
         return run_script(
-            PROJECT_ROOT / "src" / "dataset_2_loghub" / "src" / "ingest" / "download_data.py",
-            "DS2 (Loghub) - Download from GitHub"
+            PROJECT_ROOT / "src" / "dataset_2_loghub" / "src" / "ingest" / "seed_data.py",
+            "DS2 (LogHub) - Generate synthetic log CSVs [dummy]"
         )
     else:
-        print("\n" + "="*60)
-        print("DS2 (Loghub) - Skipping download (use --download to fetch)")
-        print("="*60)
-        print("  To download manually:")
-        print("    python src/dataset_2_loghub/src/ingest/download_data.py")
-        print("  Files will be saved to: data/raw/ds2_loghub/")
-        return True
+        return run_script(
+            PROJECT_ROOT / "src" / "dataset_2_loghub" / "src" / "ingest" / "download_data.py",
+            f"DS2 (LogHub) - Download from GitHub [{mode}]"
+        )
 
 
-def seed_ds3() -> bool:
-    """Seed Dataset 3 (StackOverflow) - generates sample Q&A CSVs."""
-    return run_script(
-        PROJECT_ROOT / "src" / "dataset_3_stackoverflow" / "scripts" / "seed_data.py",
-        "DS3 (StackOverflow) - Generate sample CSVs"
-    )
+def seed_ds3(mode: str = "dummy") -> bool:
+    """Seed Dataset 3 (StackOverflow)."""
+    if mode == "dummy":
+        return run_script(
+            PROJECT_ROOT / "src" / "dataset_3_stackoverflow" / "scripts" / "seed_data.py",
+            "DS3 (StackOverflow) - Generate sample CSVs [dummy]"
+        )
+    else:
+        print(f"\nDS3 (StackOverflow): {mode} mode — use DAG to acquire via API.")
+        return run_script(
+            PROJECT_ROOT / "src" / "dataset_3_stackoverflow" / "scripts" / "seed_data.py",
+            "DS3 (StackOverflow) - Generate seed CSVs as baseline"
+        )
 
 
-def seed_ds4() -> bool:
+def seed_ds4(mode: str = "dummy") -> bool:
     """Seed Dataset 4 (Synthetic) - seeds prompts database."""
     return run_script(
         PROJECT_ROOT / "src" / "dataset_4_synthetic" / "scripts" / "seed_prompts.py",
-        "DS4 (Synthetic) - Seed prompts database"
+        f"DS4 (Synthetic) - Seed prompts database [{mode}]"
     )
 
 
-def seed_ds5(download: bool = False) -> bool:
-    """Seed Dataset 5 (Glaive) - downloads from HuggingFace if requested."""
-    if download:
+def seed_ds5(mode: str = "dummy") -> bool:
+    """Seed Dataset 5 (Glaive)."""
+    if mode == "dummy":
+        return run_script(
+            PROJECT_ROOT / "src" / "dataset_5_glaive" / "scripts" / "seed_data.py",
+            "DS5 (Glaive) - Generate synthetic JSONL [dummy]"
+        )
+    else:
         return run_script(
             PROJECT_ROOT / "src" / "dataset_5_glaive" / "scripts" / "data_acquisition.py",
-            "DS5 (Glaive) - Download from HuggingFace"
+            f"DS5 (Glaive) - Download from HuggingFace [{mode}]"
+        )
+
+
+def seed_ds6(mode: str = "dummy") -> bool:
+    """Seed Dataset 6 (The Stack)."""
+    if mode == "dummy":
+        return run_script(
+            PROJECT_ROOT / "src" / "dataset_6_the_stack" / "scripts" / "download" / "seed_data.py",
+            "DS6 (The Stack) - Generate synthetic parquet [dummy]"
         )
     else:
-        print("\n" + "="*60)
-        print("DS5 (Glaive) - Skipping download (use --download to fetch)")
-        print("="*60)
-        print("  To download manually:")
-        print("    python src/dataset_5_glaive/scripts/data_acquisition.py")
-        print("  Requires: HuggingFace datasets library + network access")
-        print("  Files will be saved to: data/raw/ds5_glaive/")
-        return True
-
-
-def seed_ds6(download: bool = False) -> bool:
-    """Seed Dataset 6 (The Stack) - downloads from HuggingFace if requested."""
-    if download:
         return run_script(
             PROJECT_ROOT / "src" / "dataset_6_the_stack" / "scripts" / "download" / "stack_iac_sample.py",
-            "DS6 (The Stack) - Download from HuggingFace"
+            f"DS6 (The Stack) - Download from HuggingFace [{mode}]"
         )
-    else:
-        print("\n" + "="*60)
-        print("DS6 (The Stack) - Skipping download (use --download to fetch)")
-        print("="*60)
-        print("  To download manually:")
-        print("    python src/dataset_6_the_stack/scripts/download/stack_iac_sample.py")
-        print("  Requires: HuggingFace datasets library + network access")
-        print("  Optional: Set HF_TOKEN for gated datasets")
-        print("  Files will be saved to: data/raw/ds6_the_stack/")
-        return True
 
 
 def main():
@@ -144,74 +151,79 @@ def main():
         description="Seed all datasets for E2E testing with Airflow",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Respects PIPELINE_DATA_MODE env var (dummy / sample / full).
+The --download flag overrides to 'sample' mode for network-dependent datasets.
+
 Examples:
-    python scripts/seed_all.py              # Seed local data only (DS1, DS3, DS4)
-    python scripts/seed_all.py --download   # Also download external data (DS2, DS5, DS6)
-    python scripts/seed_all.py --ds1 --ds4  # Seed only specific datasets
+    python scripts/seed_all.py                          # Seed using env var (default: dummy)
+    PIPELINE_DATA_MODE=sample python scripts/seed_all.py  # Download capped subsets
+    python scripts/seed_all.py --download               # Same as sample mode for DS2/DS5/DS6
+    python scripts/seed_all.py --ds1 --ds4              # Seed only specific datasets
         """
     )
-    
+
     parser.add_argument("--ds1", action="store_true", help="Seed DS1 (Alibaba)")
-    parser.add_argument("--ds2", action="store_true", help="Seed DS2 (Loghub)")
+    parser.add_argument("--ds2", action="store_true", help="Seed DS2 (LogHub)")
     parser.add_argument("--ds3", action="store_true", help="Seed DS3 (StackOverflow)")
     parser.add_argument("--ds4", action="store_true", help="Seed DS4 (Synthetic)")
     parser.add_argument("--ds5", action="store_true", help="Seed DS5 (Glaive)")
     parser.add_argument("--ds6", action="store_true", help="Seed DS6 (The Stack)")
-    parser.add_argument("--download", action="store_true", 
-                       help="Download external data (DS2 from GitHub, DS5/DS6 from HuggingFace)")
-    
+    parser.add_argument("--download", action="store_true",
+                       help="Force 'sample' mode for DS2/DS5/DS6 (overrides PIPELINE_DATA_MODE)")
+
     args = parser.parse_args()
-    
-    # If no specific datasets selected, seed all
+
+    mode = get_data_mode()
+    if args.download and mode == "dummy":
+        mode = "sample"
+
     seed_specific = any([args.ds1, args.ds2, args.ds3, args.ds4, args.ds5, args.ds6])
-    
+
     print("="*60)
     print("AUTOMEND E2E TEST DATA SEEDING")
     print("="*60)
     print(f"Project root: {PROJECT_ROOT}")
-    print(f"Download mode: {'enabled' if args.download else 'disabled'}")
-    
-    # Ensure data directories exist
+    print(f"PIPELINE_DATA_MODE: {mode}")
+
     if HAS_PATHS:
         print("\nCreating data directories...")
         ensure_dirs_exist()
         print("  Data directories ready")
-    
+
     results = {}
-    
-    # Seed datasets
+
     if not seed_specific or args.ds1:
-        results["DS1 (Alibaba)"] = seed_ds1()
-    
+        results["DS1 (Alibaba)"] = seed_ds1(mode)
+
     if not seed_specific or args.ds2:
-        results["DS2 (Loghub)"] = seed_ds2(download=args.download)
-    
+        results["DS2 (LogHub)"] = seed_ds2(mode)
+
     if not seed_specific or args.ds3:
-        results["DS3 (StackOverflow)"] = seed_ds3()
-    
+        results["DS3 (StackOverflow)"] = seed_ds3(mode)
+
     if not seed_specific or args.ds4:
-        results["DS4 (Synthetic)"] = seed_ds4()
-    
+        results["DS4 (Synthetic)"] = seed_ds4(mode)
+
     if not seed_specific or args.ds5:
-        results["DS5 (Glaive)"] = seed_ds5(download=args.download)
-    
+        results["DS5 (Glaive)"] = seed_ds5(mode)
+
     if not seed_specific or args.ds6:
-        results["DS6 (The Stack)"] = seed_ds6(download=args.download)
-    
-    # Summary
+        results["DS6 (The Stack)"] = seed_ds6(mode)
+
     print("\n" + "="*60)
     print("SEEDING SUMMARY")
     print("="*60)
-    
+
     success_count = 0
     for dataset, success in results.items():
         status = "OK" if success else "FAILED"
         print(f"  {dataset}: {status}")
         if success:
             success_count += 1
-    
+
     print(f"\nTotal: {success_count}/{len(results)} succeeded")
-    
+    print(f"Mode: {mode}")
+
     if success_count == len(results):
         print("\nNext steps:")
         print("  1. Copy .env.example to .env and set your API keys")

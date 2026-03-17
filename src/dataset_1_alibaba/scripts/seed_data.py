@@ -144,32 +144,35 @@ def generate_server_event(num_rows: int = NUM_ROWS) -> list[str]:
     return rows
 
 
-def main():
-    """Generate all seed data files for DS1."""
-    print(f"Generating DS1 (Alibaba) seed data...")
+def main(num_rows: int | None = None):
+    """Generate all seed data files for DS1.
+
+    Parameters
+    ----------
+    num_rows : int | None
+        Number of rows per CSV.  Defaults to ``NUM_ROWS`` (100).
+    """
+    n = num_rows if num_rows is not None else NUM_ROWS
+    print(f"Generating DS1 (Alibaba) seed data ({n} rows)...")
     print(f"Output directory: {RAW_DIR}")
-    
-    # Ensure directory exists
+
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Generate and save server_usage_sample.csv
-    server_usage_rows = generate_server_usage(NUM_ROWS)
+
+    server_usage_rows = generate_server_usage(n)
     with open(SERVER_USAGE_FILE, "w") as f:
         f.write("\n".join(server_usage_rows) + "\n")
     print(f"  Created: {SERVER_USAGE_FILE.name} ({len(server_usage_rows)} rows)")
-    
-    # Generate and save batch_task_sample.csv
-    batch_task_rows = generate_batch_task(NUM_ROWS)
+
+    batch_task_rows = generate_batch_task(n)
     with open(BATCH_TASK_FILE, "w") as f:
         f.write("\n".join(batch_task_rows) + "\n")
     print(f"  Created: {BATCH_TASK_FILE.name} ({len(batch_task_rows)} rows)")
-    
-    # Generate and save server_event_sample.csv
-    server_event_rows = generate_server_event(NUM_ROWS)
+
+    server_event_rows = generate_server_event(n)
     with open(SERVER_EVENT_FILE, "w") as f:
         f.write("\n".join(server_event_rows) + "\n")
     print(f"  Created: {SERVER_EVENT_FILE.name} ({len(server_event_rows)} rows)")
-    
+
     print(f"\nDS1 seed data generation complete!")
     print(f"Files saved to: {RAW_DIR}")
     return True

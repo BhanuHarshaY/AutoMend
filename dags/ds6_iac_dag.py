@@ -50,28 +50,16 @@ default_args = {
 
 def task_download(**ctx):
     import os
-    from src.utils.dvc_utils import check_raw_data_exists, version_raw_data
-    
     os.chdir(PROJECT_ROOT)
-    
-    # Check if raw data exists locally or in DVC
-    if check_raw_data_exists(DS6_RAW, project_root=PROJECT_ROOT):
-        logger.info("Raw data found (local or DVC), skipping download")
-        return {"status": "cached"}
-    
-    # Data not found - download fresh
-    token = ctx["var"]["value"].get("HF_TOKEN", "") if "var" in ctx else ""
+
+    token = ctx.get("var", {}).get("value", {}).get("HF_TOKEN", "") if "var" in ctx else ""
     if token:
         os.environ["HUGGING_FACE_HUB_TOKEN"] = token
-    
-    DS6_RAW.mkdir(parents=True, exist_ok=True)
-    from scripts.download.stack_iac_sample import download
-    download()
-    
-    # Version the raw data after successful download
-    version_raw_data(str(DS6_RAW), cwd=str(PROJECT_ROOT))
-    logger.info("Raw data versioned with DVC")
-    return {"status": "downloaded"}
+
+    from src.utils.data_acquire import ensure_data
+    result = ensure_data("ds6", DS6_RAW, PROJECT_ROOT)
+    logger.info("DS6 acquire: %s", result)
+    return result
 
 
 def task_analyze(**ctx):

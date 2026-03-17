@@ -28,8 +28,10 @@ x-airflow-common:
     # Slack alerting (set in .env file)
     SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     SLACK_CHANNEL: ${SLACK_CHANNEL:-#automend-alerts}
-    # Ray configuration
-    RAY_ADDRESS: ${RAY_ADDRESS:-ray-head:6379}
+    # Data acquisition mode (dummy / sample / full)
+    PIPELINE_DATA_MODE: ${PIPELINE_DATA_MODE:-dummy}
+    # Ray configuration -- workers init Ray locally (no cluster connection)
+    # Set RAY_ADDRESS=ray-head:10001 only if using Ray Client protocol
     RAY_NUM_CPUS: ${RAY_NUM_CPUS:-4}
     RAY_OBJECT_STORE_MB: ${RAY_OBJECT_STORE_MB:-512}
     # Additional Python packages
@@ -37,7 +39,7 @@ x-airflow-common:
       dvc>=3.40.0
       pyarrow>=15.0.0
       polars>=1.0.0
-      ray[default]>=2.10.0
+      ray[default]==2.10.0
       numpy>=1.24.0
       requests>=2.31.0
       pydantic>=2.0

@@ -1,6 +1,6 @@
 # Automend MLOps Monorepo
 
-A production-ready MLOps data pipeline integrating 6 datasets for two ML tracks, built with Apache Airflow orchestration, DVC data versioning, Great Expectations validation, Fairlearn bias detection, and centralized Slack alerting.
+A production-ready MLOps data pipeline integrating 6 datasets for two ML tracks, built with Apache Airflow orchestration, Ray + Polars distributed processing, DVC data versioning, Polars-native validation, Fairlearn bias detection, and centralized Slack alerting.
 
 ---
 
@@ -11,20 +11,21 @@ A production-ready MLOps data pipeline integrating 6 datasets for two ML tracks,
 3. [ML Tracks and Datasets](#ml-tracks-and-datasets)
 4. [Project Structure](#project-structure)
 5. [Quick Start](#quick-start)
-6. [Pipeline Components](#pipeline-components)
-7. [Data Versioning with DVC](#data-versioning-with-dvc)
-8. [Schema Validation and Statistics](#schema-validation-and-statistics)
-9. [Anomaly Detection and Alerts](#anomaly-detection-and-alerts)
-10. [Bias Detection and Mitigation](#bias-detection-and-mitigation)
-11. [Testing](#testing)
-12. [Troubleshooting](#troubleshooting)
-13. [Evaluation Criteria Checklist](#evaluation-criteria-checklist)
+6. [Data Acquisition Modes](#data-acquisition-modes)
+7. [Configuration Reference](#configuration-reference)
+8. [Pipeline Components](#pipeline-components)
+9. [Data Versioning with DVC](#data-versioning-with-dvc)
+10. [Schema Validation and Statistics](#schema-validation-and-statistics)
+11. [Anomaly Detection and Alerts](#anomaly-detection-and-alerts)
+12. [Bias Detection and Mitigation](#bias-detection-and-mitigation)
+13. [Testing](#testing)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Project Overview
 
-AutoMend is a self-healing MLOps platform, "Zapier for MLOps," that autonomously remediates production ML incidents through event-driven workflows. We have currently implemented the end-to-end MLOps data pipeline designed to process and prepare data for two distinct machine learning models:
+AutoMend is a self-healing MLOps platform, "Zapier for MLOps," that autonomously remediates production ML incidents through event-driven workflows. The end-to-end MLOps data pipeline processes and prepares data for two distinct machine learning models:
 
 - **Track A (Trigger Engine)**: A BERT-based classifier for anomaly detection
 - **Track B (Generative Architect)**: A fine-tuned Llama-3 agent for infrastructure remediation
@@ -34,12 +35,14 @@ The pipeline transforms raw data from 6 different sources into standardized "Gol
 ### Key Features
 
 - **Airflow Orchestration**: All pipelines run as DAGs with dependency management
+- **Ray + Polars Processing**: Distributed data processing with Ray tasks/actors and Polars DataFrames
+- **Three Data Modes**: `dummy` (offline synthetic), `sample` (capped download), `full` (complete dataset)
 - **DVC Data Versioning**: Track and version all data artifacts
-- **Great Expectations Validation**: Automated schema and data quality checks
+- **Polars-Native Validation**: Lightweight schema and data quality checks
 - **Fairlearn Bias Detection**: Data slicing and fairness analysis
 - **Centralized Alerting**: Slack webhook notifications for all pipeline events
 - **Comprehensive Testing**: Unit, integration, and E2E tests with pytest
-- **Docker Deployment**: Complete containerized environment
+- **Docker Deployment**: Complete containerized environment with Ray head node
 
 ---
 
@@ -47,7 +50,7 @@ The pipeline transforms raw data from 6 different sources into standardized "Gol
 
 ### Orchestration Design
 
-Airflow serves as the **sole orchestrator** for all pipelines. DVC is used **only for data versioning**, not for pipeline execution.
+Airflow serves as the **sole orchestrator** for all pipelines. DVC is used **only for data versioning**, not for pipeline execution. Ray provides distributed processing within each pipeline task.
 
 ```
                          ┌─────────────────────────────────────┐
@@ -73,49 +76,23 @@ Airflow serves as the **sole orchestrator** for all pipelines. DVC is used **onl
           │  Track A        │                         │  Track B        │
           │  Combiner       │                         │  Combiner       │
           └─────────────────┘                         └─────────────────┘
-                    │                                           │
-                    ▼                                           ▼
-    ┌───────────────────────────────────────────────────────────────────────┐
-    │                      DVC (Data Versioning Only)                       │
-    │  • dvc add data/processed/ds*/            (per-dataset versioning)    │
-    │  • dvc add track_A_combined.parquet       (master Track A)            │
-    │  • dvc add track_B_combined.jsonl         (master Track B)            │
-    │  • dvc push                               (to remote storage)         │
-    └───────────────────────────────────────────────────────────────────────┘
 ```
 
-### DAG Architecture
+### Processing Stack
 
-**Master Track A DAG** (`dags/master_track_a.py`):
-```
-pipeline_start
-      │
-      ├──► trigger_ds1_alibaba ──┐
-      │                          ├──► run_combiner ──► dvc_version_combined
-      └──► trigger_ds2_loghub ───┘
-                                          │
-                                          ▼
-                              track_A_combined.parquet
-```
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Orchestration | Apache Airflow | DAG scheduling, task dependencies, retries |
+| Processing | Ray (Tasks, Data, Actors) | Parallel/distributed data processing |
+| DataFrames | Polars | Vectorized data transformations (replaces pandas) |
+| Validation | Polars-native checks | Schema validation, data quality (replaces Great Expectations) |
+| Bias Detection | Fairlearn + Polars | Data slicing, fairness metrics |
+| Data Versioning | DVC | Track and version data artifacts |
+| Alerting | Slack Webhooks | Pipeline event notifications |
+| Containerization | Docker Compose | Airflow + Ray + Postgres |
 
-![Master Track A DAG](screenshots/master_track_a.png)
+### Individual Dataset DAG Tasks (example for DS1)
 
-**Master Track B DAG** (`dags/master_track_b.py`):
-```
-pipeline_start
-      │
-      ├──► trigger_ds3_stackoverflow ──┐
-      ├──► trigger_ds4_synthetic ──────┤
-      ├──► trigger_ds5_glaive ─────────┼──► run_combiner ──► dvc_version_combined
-      └──► trigger_ds6_the_stack ──────┘
-                                                │
-                                                ▼
-                                    track_B_combined.jsonl
-```
-
-![Master Track B DAG](screenshots/master_track_b.png)
-
-**Individual Dataset DAG Tasks** (example for DS1):
 ```
 acquire_data ──► preprocess_data ──► validate_schema ──► schema_stats
                                                               │
@@ -123,11 +100,7 @@ acquire_data ──► preprocess_data ──► validate_schema ──► schem
       dvc_version ◄── export_to_interim ◄── bias_detection ◄── detect_anomalies
 ```
 
-![DS1 Alibaba DAG](screenshots/ds1_dag.png)
-
-Each individual DAG includes: acquisition → preprocessing → validation → statistics → anomaly detection → bias detection → **export to interim** → DVC versioning.
-
-The `export_to_interim` task copies each dataset's processed output to the `data/interim/` directory in the standardized format expected by the combiners (Parquet for Track A, JSONL for Track B).
+Each DAG's `acquire_data` task is **self-contained**: if raw data is missing, it automatically acquires it based on the `PIPELINE_DATA_MODE` environment variable.
 
 ---
 
@@ -136,8 +109,6 @@ The `export_to_interim` task copies each dataset's processed output to the `data
 ### Track A: Trigger Engine (Anomaly Classification)
 
 **Target Model**: BERT-based Sequence Classifier (LogBERT)
-
-**Goal**: Classify 5-minute windows of infrastructure activity into anomaly classes:
 
 | Label | Class | Description | Source |
 |-------|-------|-------------|--------|
@@ -149,98 +120,46 @@ The `export_to_interim` task copies each dataset's processed output to the `data
 | 5 | Auth_Failure | Authentication failures | DS2 only |
 | 6 | Permission_Denied | Access denied errors | DS2 only |
 
-**Note**: DS1 (Alibaba) produces labels 0-4, while DS2 (LogHub) produces labels 0-6. The combined Track A output includes all 7 classes.
-
-**Output Format (Format A)**:
-```json
-{"sequence_ids": [402, 115, 99, 402], "label": 1}
-```
-- **Schema**: Parquet with columns `sequence_ids` (List[int]) and `label` (int 0-6)
-- **Final Output**: `data/processed/track_A_combined.parquet`
+**Output Format (Format A)**: Parquet with columns `sequence_ids` (List[int]) and `label` (int 0-6)
 
 #### Dataset 1: Alibaba Cluster Trace 2017
 
-| Attribute | Description |
-|-----------|-------------|
-| **Purpose** | Detect Resource-Based Anomalies |
-| **Source** | Generated CSV files via `seed_data.py` |
-| **Processing** | Feature selection → Discretization → Sliding window → Label logic |
-| **Balancing** | Undersampling Normal class, oversampling failure classes |
-
-**Preprocessing Pipeline**:
-1. **Feature Selection**: Extract `cpu_utilization`, `memory_utilization`, `status`
-2. **Discretization**: Bin continuous metrics into token IDs (e.g., 0-10% CPU → Token_A)
-3. **Sliding Window**: Group into 5-minute windows to capture trends
-4. **Label Logic**: Apply heuristic labeling based on termination status and resource usage
+- **Processing**: Polars LazyFrames + Ray remote tasks for parallel CSV processing
+- **Pipeline**: Feature selection → Discretization → Sliding window → Label logic → Class balancing
 
 #### Dataset 2: LogHub (LogPAI)
 
-| Attribute | Description |
-|-----------|-------------|
-| **Purpose** | Detect Log-Based Anomalies |
-| **Source** | GitHub download from LogPAI repository |
-| **Systems** | Linux, Hadoop, HDFS, Spark, HPC |
-| **Processing** | Normalize → Merge → Sample → Label → Validate → Format |
-
-**Preprocessing Pipeline**:
-1. **Log Normalization**: Parse raw logs into unified schema with severity levels
-2. **Session Grouping**: Group logs by time window
-3. **Keyword Labeling**: Scan templates for failure keywords (Timeout, Unreachable, Checksum)
-4. **Sequence Truncation**: Limit to 512 tokens, pad shorter sequences
-
----
+- **Systems**: Linux, Hadoop, HDFS, Spark, HPC
+- **Processing**: Ray Data + Polars normalizers for each log system
+- **Pipeline**: Normalize → Merge → Sample → Label → Validate → Format
 
 ### Track B: Generative Architect (Workflow Agent)
 
 **Target Model**: Fine-Tuned Llama-3-8B (Instruction Tuned)
 
-**Goal**: Map User Request + System Context into valid JSON Action Lists
-
-**Output Format (Format B - ChatML)**:
-```json
-{
-  "messages": [
-    {"role": "system", "content": "You are AutoMend. Available Tools: [...]"},
-    {"role": "user", "content": "Scale my deployment to 5 replicas"},
-    {"role": "assistant", "content": "{\"workflow\": {\"steps\": [...]}}"}
-  ]
-}
-```
-- **Schema**: JSONL with ChatML structure
-- **Final Output**: `data/processed/track_B_combined.jsonl`
+**Output Format (Format B - ChatML)**: JSONL with ChatML message structure
 
 #### Dataset 3: StackOverflow Q&A
 
-| Attribute | Description |
-|-----------|-------------|
-| **Purpose** | Teach real-world user intent (The Intent Layer) |
-| **Source** | Generated CSV or StackOverflow API |
-| **Processing** | Tag filtering → Teacher-Student transformation → ChatML conversion |
+- **Processing**: Python generators + chunked Polars + Ray for parallel batch processing
+- **Source**: StackOverflow API (sample/full mode) or synthetic CSV (dummy mode)
 
 #### Dataset 4: Synthetic MLOps Scenarios
 
-| Attribute | Description |
-|-----------|-------------|
-| **Purpose** | Teach parameter precision and edge cases (The Tool Drill) |
-| **Source** | SQLite prompts database + Google Gemini API |
-| **Processing** | Procedural generation → Schema enforcement → ChatML conversion |
-| **Requires** | `GOOGLE_API_KEY` environment variable |
+- **Processing**: Ray actors + asyncio for concurrent Gemini API calls
+- **Source**: SQLite prompts database + Google Gemini 2.5 Flash API
+- **Requires**: `GOOGLE_API_KEY` environment variable
 
 #### Dataset 5: Glaive Function Calling v2
 
-| Attribute | Description |
-|-----------|-------------|
-| **Purpose** | Teach JSON structural stability (The Syntax Layer) |
-| **Source** | HuggingFace Hub |
-| **Processing** | Subset filtering (10%) → Schema remapping → Context retention |
+- **Processing**: Ray Data + HuggingFace integration for distributed loading
+- **Source**: HuggingFace Hub (`glaiveai/glaive-function-calling-v2`)
 
 #### Dataset 6: The Stack (IaC)
 
-| Attribute | Description |
-|-----------|-------------|
-| **Purpose** | Teach complex configuration generation (The Payload Layer) |
-| **Source** | HuggingFace Hub (The Stack dataset) |
-| **Processing** | Wrapper injection → PII redaction → Prompt synthesis |
+- **Processing**: Ray Data + distributed filtering and PII redaction
+- **Source**: HuggingFace Hub (`bigcode/the-stack-dedup`, YAML sub-corpus)
+- **Requires**: `HF_TOKEN` for gated dataset access (full mode)
 
 ---
 
@@ -250,36 +169,21 @@ The `export_to_interim` task copies each dataset's processed output to the `data
 Automend/
 ├── data/
 │   ├── raw/                        # Raw input data (DVC tracked)
-│   │   ├── ds1_alibaba/
-│   │   ├── ds2_loghub/
-│   │   ├── ds3_stackoverflow/
-│   │   ├── ds4_synthetic/
-│   │   ├── ds5_glaive/
-│   │   └── ds6_the_stack/
+│   ├── external/                   # External CSV files (DS3)
 │   ├── interim/                    # Intermediate outputs for combiners
-│   │   ├── ds1_alibaba.parquet
-│   │   ├── ds2_loghub.parquet
-│   │   ├── ds3_stackoverflow.jsonl
-│   │   ├── ds4_synthetic.jsonl
-│   │   ├── ds5_glaive.jsonl
-│   │   └── ds6_the_stack.jsonl
 │   └── processed/                  # Final outputs (DVC tracked)
-│       ├── ds{1-6}_*/              # Per-dataset outputs
-│       ├── track_A_combined.parquet
-│       └── track_B_combined.jsonl
 ├── src/
 │   ├── config/
-│   │   └── paths.py               # Centralized path configuration
+│   │   ├── paths.py               # Centralized path configuration
+│   │   ├── ray_config.py          # Ray initialization and per-dataset configs
+│   │   └── data_mode.py           # PIPELINE_DATA_MODE configuration
 │   ├── utils/
+│   │   ├── data_acquire.py        # Shared ensure_data() orchestrator
+│   │   ├── polars_validation.py   # Polars-native validation functions
 │   │   ├── dvc_utils.py           # DVC utility functions
-│   │   ├── alerting.py            # Centralized Slack alerting
-│   │   └── ge_utils.py            # Great Expectations utilities
+│   │   └── alerting.py            # Centralized Slack alerting
 │   ├── dataset_1_alibaba/         # Track A: Alibaba pipeline
-│   │   ├── scripts/               # preprocess.py, bias_detection.py, etc.
-│   │   └── tests/
 │   ├── dataset_2_loghub/          # Track A: LogHub pipeline
-│   │   ├── src/                   # ingest/, normalize/, validate/, etc.
-│   │   └── tests/
 │   ├── dataset_3_stackoverflow/   # Track B: StackOverflow pipeline
 │   ├── dataset_4_synthetic/       # Track B: Synthetic pipeline
 │   ├── dataset_5_glaive/          # Track B: Glaive pipeline
@@ -287,8 +191,8 @@ Automend/
 │   ├── combiner_track_a/          # Combines DS1 + DS2 → Parquet
 │   └── combiner_track_b/          # Combines DS3-6 → JSONL
 ├── dags/                          # ALL Airflow DAGs (centralized)
-│   ├── master_track_a.py          # Orchestrates Track A
-│   ├── master_track_b.py          # Orchestrates Track B
+│   ├── master_track_a.py
+│   ├── master_track_b.py
 │   ├── ds1_alibaba_dag.py
 │   ├── ds2_loghub_dag.py
 │   ├── ds3_stackoverflow_dag.py
@@ -296,22 +200,11 @@ Automend/
 │   ├── ds5_glaive_dag.py
 │   └── ds6_iac_dag.py
 ├── tests/                         # Root-level integration tests
-│   ├── test_dags.py               # DAG integrity tests
-│   ├── test_combiner_track_a.py
-│   ├── test_combiner_track_b.py
-│   ├── test_integration.py
-│   ├── test_e2e.py
-│   ├── test_schemas.py
-│   └── test_dvc_config.py
 ├── scripts/
-│   └── seed_all.py                # Master seed script
-├── logs/                          # Airflow and alert logs
-├── plugins/                       # Airflow plugins
-├── .dvc/                          # DVC configuration
-├── docker-compose.yaml            # Airflow Docker setup
-├── requirements.txt               # Consolidated dependencies
-├── pytest.ini                     # Test configuration
-├── run_all_tests.py               # Test runner script
+│   └── seed_all.py                # Master seed script (respects PIPELINE_DATA_MODE)
+├── docker-compose.yaml            # Airflow + Ray + Postgres
+├── requirements.txt
+├── pytest.ini
 └── .env.example                   # Environment variables template
 ```
 
@@ -326,121 +219,220 @@ Automend/
 git clone <repository-url>
 cd Automend
 
-# Create and activate conda environment (Python 3.12)
+# Create and activate conda environment
 conda create -n mlops_project python=3.12
 conda activate mlops_project
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy environment file and configure
+# Copy environment file
 cp .env.example .env
-# Edit .env with your API keys
 ```
 
 ### 2. Configure Environment Variables
 
-Edit `.env` with required keys:
+Edit `.env`:
 
 ```bash
-# Required
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
-GOOGLE_API_KEY=your_gemini_api_key  # For DS4 synthetic generation
+# Data acquisition mode (dummy / sample / full)
+PIPELINE_DATA_MODE=dummy
 
-# Optional
-HF_TOKEN=your_huggingface_token     # For DS5/DS6 downloads
-SLACK_CHANNEL=#automend-alerts      # Display name only
+# Required for DS4 (Gemini API) in all modes
+GOOGLE_API_KEY=your_gemini_api_key
+
+# Required for DS6 (The Stack) in full mode
+HF_TOKEN=your_huggingface_token
+
+# Optional: Slack alerting
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 ```
 
-### 3. Seed Test Data
+### 3. Seed Data (Optional)
+
+Data is auto-acquired when DAGs run, but you can pre-seed for local development:
 
 ```bash
-# Seed local datasets (DS1, DS3, DS4)
+# Seed using current PIPELINE_DATA_MODE (default: dummy)
 python scripts/seed_all.py
 
-# Seed all including external downloads (DS2, DS5, DS6)
+# Force sample-mode downloads for DS2/DS5/DS6
 python scripts/seed_all.py --download
 
 # Seed specific datasets
 python scripts/seed_all.py --ds1 --ds2
 ```
 
-### 4. Start Airflow (Docker)
+### 4. Start Docker Services
 
 ```bash
-# Start all services
 docker-compose up -d
 
-# Wait for initialization (~30 seconds)
-docker-compose logs airflow-init
-
-# Access Airflow UI
-# URL: http://localhost:8080
-# Username: airflow
-# Password: airflow
+# Wait for initialization (~60 seconds for pip installs)
+docker-compose logs -f airflow-init
 ```
+
+Services:
+- **Airflow UI**: http://localhost:8080 (username: `airflow`, password: `airflow`)
+- **Ray Dashboard**: http://localhost:8265
 
 ### 5. Run Pipelines
 
-**Via Airflow UI (Recommended)**:
-1. Navigate to http://localhost:8080
-2. Enable `master_track_a` or `master_track_b` DAG
-3. Click "Trigger DAG" button
-4. Monitor progress in Graph or Tree view
+In the Airflow UI:
+1. Enable the desired DAG (toggle on)
+2. Click "Trigger DAG"
+3. Monitor in Graph or Tree view
 
-**Via CLI**:
+Individual DAGs: `ds1_alibaba_pipeline`, `ds2_loghub_pipeline`, `ds3_stackoverflow_pipeline`, `ds4_synthetic_dag`, `ds5_glaive_pipeline`, `ds6_iac_pipeline`
+
+Master DAGs: `master_track_a` (DS1 + DS2 + combiner), `master_track_b` (DS3-6 + combiner)
+
+---
+
+## Data Acquisition Modes
+
+The `PIPELINE_DATA_MODE` environment variable controls how each pipeline acquires raw data when it's missing. Every DAG's acquire task follows the same pattern:
+
+1. Check if data exists locally
+2. If not, try `dvc pull` from remote
+3. If still missing, acquire based on mode
+
+### Mode Comparison
+
+| Dataset | `dummy` (offline) | `sample` (capped download) | `full` (complete) |
+|---------|-------------------|---------------------------|-------------------|
+| DS1 (Alibaba) | 100-row synthetic CSVs | 1,000-row synthetic CSVs | Manual CSV placement required |
+| DS2 (LogHub) | 50-row synthetic log CSVs | 2K-row CSVs from GitHub | Same as sample (max available) |
+| DS3 (StackOverflow) | 50-row synthetic Q&A | 500 questions via API | Unlimited API queries |
+| DS4 (Synthetic) | 15 seed prompts + Gemini | 15 prompts + Gemini | 100 expanded prompts + Gemini |
+| DS5 (Glaive) | 100 synthetic JSONL records | 5,000 records from HuggingFace | Full dataset from HuggingFace |
+| DS6 (The Stack) | 50 synthetic parquet records | 20,000 records from HuggingFace | Full dataset (needs HF_TOKEN) |
+
+### When to Use Each Mode
+
+- **`dummy`**: Local development, CI/CD, E2E testing. No network or API keys needed. Fast.
+- **`sample`**: Integration testing with real data. Network required. Moderate size.
+- **`full`**: Production training runs. Network + API tokens required. Full dataset size.
+
+### Setting the Mode
+
 ```bash
-# Trigger from container
-docker-compose exec airflow-scheduler airflow dags trigger master_track_a
+# In .env file
+PIPELINE_DATA_MODE=dummy
+
+# Or inline
+PIPELINE_DATA_MODE=sample python scripts/seed_all.py
+
+# Docker Compose reads from .env automatically
+docker-compose up -d
 ```
+
+---
+
+## Configuration Reference
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PIPELINE_DATA_MODE` | No | `dummy` | Data acquisition mode: `dummy`, `sample`, or `full` |
+| `GOOGLE_API_KEY` | For DS4 | - | Google Gemini API key for synthetic workflow generation |
+| `HF_TOKEN` | For DS6 full | - | HuggingFace token for gated dataset access |
+| `SLACK_WEBHOOK_URL` | No | - | Slack incoming webhook URL for alerts |
+| `SLACK_CHANNEL` | No | `#automend-alerts` | Slack channel display name |
+| `RAY_NUM_CPUS` | No | `4` | Number of CPUs for Ray workers |
+| `RAY_OBJECT_STORE_MB` | No | `512` | Ray object store memory in MB |
+
+### Key Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `.env` | Environment variables (API keys, mode, Slack) |
+| `src/config/data_mode.py` | Per-dataset acquisition parameters for each mode |
+| `src/config/ray_config.py` | Ray initialization, per-dataset chunk/sample sizes |
+| `src/config/paths.py` | Centralized data directory paths |
+| `docker-compose.yaml` | Service definitions (Airflow, Ray, Postgres) |
 
 ---
 
 ## Pipeline Components
 
-### Data Acquisition
+### Data Acquisition (`src/utils/data_acquire.py`)
 
-Each dataset has its own acquisition scripts located within its source directory:
+All DAGs use the shared `ensure_data()` function:
 
-| Dataset | Acquisition Method | Script Path |
-|---------|-------------------|-------------|
-| DS1 (Alibaba) | Generate CSV files | `src/dataset_1_alibaba/scripts/seed_data.py` |
-| DS2 (LogHub) | GitHub download | `src/dataset_2_loghub/src/ingest/download_data.py` |
-| DS3 (StackOverflow) | Generate/API | `src/dataset_3_stackoverflow/scripts/seed_data.py`, `data_acquisition.py` |
-| DS4 (Synthetic) | SQLite + Gemini API | `src/dataset_4_synthetic/scripts/seed_prompts.py` |
-| DS5 (Glaive) | HuggingFace download | `src/dataset_5_glaive/scripts/data_acquisition.py` |
-| DS6 (The Stack) | HuggingFace download | `src/dataset_6_the_stack/scripts/download/stack_iac_sample.py` |
+```python
+from src.utils.data_acquire import ensure_data
 
-### Data Preprocessing
+# Called in each DAG's acquire task
+result = ensure_data("ds1", raw_dir, project_root)
+# Returns: {"status": "cached"|"seeded"|"downloaded", "mode": "dummy"|"sample"|"full"}
+```
 
-Preprocessing is modular and reusable:
+The function checks local files → tries DVC pull → dispatches to the appropriate seed or download script based on `PIPELINE_DATA_MODE`.
 
-- **Feature Engineering**: Discretization, tokenization, sliding windows
-- **Schema Normalization**: Unified format across all systems
-- **Data Cleaning**: PII redaction, JSON escaping, format conversion
-- **Label Assignment**: Heuristic and keyword-based labeling
+### Data Processing (Ray + Polars)
 
-### Tracking and Logging
+Each dataset uses Ray and Polars differently based on its workload:
 
-**Airflow Logging**:
-- Task logs available in Airflow UI (Task → Log)
-- Logs stored in `logs/` directory
+| Dataset | Ray Pattern | Polars Usage |
+|---------|------------|-------------|
+| DS1 | `@ray.remote` tasks (parallel CSV files) | LazyFrames for transforms |
+| DS2 | Ray Data for distributed normalization | Expressions for log parsing |
+| DS3 | `@ray.remote` tasks (parallel batch processing) | DataFrame for validation |
+| DS4 | Ray Actors + asyncio (concurrent Gemini calls) | - |
+| DS5 | `ray.data.from_huggingface()` | DataFrame for preprocessing |
+| DS6 | `ray.data.read_parquet()` + `.map()` | DataFrame for stats/bias |
 
-**Alert Logging**:
-- All alerts logged to `logs/alerts.log`
-- Alert history in `logs/alerts_history.json` (last 1000 alerts)
+### Validation (`src/utils/polars_validation.py`)
 
-**Python Logging**:
-- Each module uses Python's `logging` library
-- Configurable log levels and handlers
+Polars-native validation replaces Great Expectations:
+
+```python
+from src.utils.polars_validation import (
+    validate_columns_present,
+    validate_no_nulls,
+    validate_value_range,
+    validate_row_count,
+    run_validation_suite,
+)
+
+checks = [
+    validate_columns_present(df, ["col_a", "col_b"]),
+    validate_no_nulls(df, ["col_a"]),
+    validate_value_range(df, "score", min_val=0, max_val=100),
+]
+report = run_validation_suite(checks)
+# {"total": 3, "passed": 3, "failed": 0, "all_passed": True, "results": [...]}
+```
+
+### Centralized Alerting (`src/utils/alerting.py`)
+
+All alerts flow through a unified Slack webhook system:
+
+```python
+from src.utils.alerting import (
+    alert_anomaly_detected,
+    alert_validation_failure,
+    alert_bias_detected,
+    on_failure_callback,
+)
+```
+
+| Alert Type | Severity | When Triggered |
+|------------|----------|----------------|
+| Pipeline Failure | CRITICAL | Any task fails (via `on_failure_callback`) |
+| Anomaly Detected | WARNING/ERROR | Data anomalies found |
+| Validation Failure | ERROR | Schema validation fails |
+| Bias Detected | WARNING/ERROR | Data bias above threshold |
+
+Alerts are **non-blocking** -- pipelines continue even if Slack delivery fails. All alerts are also logged to `logs/alerts.log` and `logs/alerts_history.json`.
 
 ---
 
 ## Data Versioning with DVC
 
 DVC is used for **data tracking only** (not pipeline orchestration).
-
-### Configuration
 
 ```ini
 # .dvc/config
@@ -450,531 +442,106 @@ DVC is used for **data tracking only** (not pipeline orchestration).
     url = ../dvc_storage
 ```
 
-### Usage
+Each DAG automatically versions data with DVC after successful acquisition and processing. To interact manually:
 
 ```bash
-# Pull data from remote
-dvc pull
-
-# Push data to remote
-dvc push
-
-# Check status
-dvc status
-
-# Add new data manually
-dvc add data/processed/my_output/
+dvc pull          # Pull data from remote
+dvc push          # Push data to remote
+dvc status        # Check tracking status
 ```
 
-### Download-Once Pattern
+### Wiping Data for Fresh Start
 
-Each DAG implements a "download-once" pattern:
-
-```python
-from src.utils.dvc_utils import check_raw_data_exists, version_raw_data
-
-# Check if data exists locally or in DVC
-if check_raw_data_exists(raw_dir, project_root=PROJECT_ROOT):
-    logger.info("Raw data found (local or DVC)")
-else:
-    # Download and version
-    download_data()
-    version_raw_data(raw_dir, cwd=PROJECT_ROOT)
-```
-
----
-
-## Schema Validation and Statistics
-
-### Per-Dataset Schema and Statistics
-
-Each dataset pipeline includes dedicated schema validation and statistics generation:
-
-#### DS1 (Alibaba) - `src/dataset_1_alibaba/scripts/`
-
-| Script | Output | Description |
-|--------|--------|-------------|
-| `validate_schema.py` | Validation result | Validates Format A sequences |
-| `schema_stats.py` | `schema_stats.json` | Label distribution, sequence lengths, token stats |
-| `anomaly_detection.py` | Anomaly list | Detects resource exhaustion, system crashes |
-| `bias_detection.py` | `bias_report.json` | Fairlearn analysis, data slicing |
-
-**Example `schema_stats.json`**:
-```json
-{
-  "total_sequences": 100,
-  "label_distribution": {
-    "Normal": 45,
-    "Resource_Exhaustion": 18,
-    "System_Crash": 12
-  },
-  "sequence_length": {"min": 5, "max": 20, "mean": 12.5},
-  "token_stats": {"unique_tokens": 20, "cpu_tokens": 150, "memory_tokens": 120},
-  "quality_checks": {"empty_sequences": 0, "invalid_labels": 0}
-}
-```
-
-#### DS2 (LogHub) - `src/dataset_2_loghub/src/validate/`
-
-| Script | Output | Description |
-|--------|--------|-------------|
-| `generate_statistics.py` | `statistics_report.json` | GE validation + pandas stats |
-| `validate_quality.py` | Quality report | Data quality checks |
-| `src/bias/detect_bias.py` | Bias analysis | Slice-based bias detection |
-
-**Example `statistics_report.json`** (with Great Expectations):
-```json
-{
-  "ge_validation": {
-    "success": true,
-    "results": [
-      {"expectation": "expect_table_columns_to_match_ordered_list", "success": true},
-      {"expectation": "expect_column_values_to_be_in_set", "success": true, "column": "system"}
-    ]
-  },
-  "statistics": {
-    "total_rows": 10000,
-    "rows_per_system": {"linux": 2000, "hadoop": 2000, "hdfs": 2000, "spark": 2000, "hpc": 2000},
-    "severity_distribution": {"INFO": 7500, "WARN": 2000, "ERROR": 500},
-    "event_type_distribution": {"normal_ops": 8000, "network_issue": 1000, "job_failed": 500}
-  }
-}
-```
-
-#### DS3 (StackOverflow) - `src/dataset_3_stackoverflow/scripts/`
-
-| Script | Output | Description |
-|--------|--------|-------------|
-| `data_validation.py` | Validation report | Schema and format validation |
-| `schema_validation.py` | Schema check | ChatML format validation |
-| `bias_detection.py` | Bias report | Content bias analysis |
-
-#### DS4 (Synthetic) - `src/dataset_4_synthetic/src/data/`
-
-| Script | Output | Description |
-|--------|--------|-------------|
-| `schema_stats.py` | `schema.json`, `stats.json` | Format B schema inference, quality metrics |
-| `anomaly.py` | Anomaly detection | Invalid JSON, missing fields |
-
-**Example `stats.json`**:
-```json
-{
-  "row_count": 500,
-  "missing_user_intent": 0,
-  "records_missing_valid_messages": 0
-}
-```
-
-#### DS5 (Glaive) - `src/dataset_5_glaive/scripts/`
-
-| Script | Output | Description |
-|--------|--------|-------------|
-| `schema_validation.py` | Validation result | ChatML structure validation |
-| `anomaly_detection.py` | Anomaly report | Malformed records, outliers |
-| `bias_detection.py` | Bias report | Function call distribution bias |
-
-#### DS6 (The Stack) - `src/dataset_6_the_stack/scripts/validate/`
-
-| Script | Output | Description |
-|--------|--------|-------------|
-| `schema_stats.py` | Stats report | IaC payload statistics |
-| `anomaly_alerts.py` | Anomaly alerts | Invalid YAML, PII detection |
-| `bias_detection.py` | Bias report | Language/framework bias analysis |
-
-### Great Expectations Integration
-
-DS2 uses Great Expectations for comprehensive schema validation:
-
-```python
-# From src/dataset_2_loghub/src/validate/generate_statistics.py
-df_ge = ge.from_pandas(df)
-
-# Schema: all required columns present
-df_ge.expect_table_columns_to_match_ordered_list(REQUIRED_COLS)
-
-# Value set checks
-df_ge.expect_column_values_to_be_in_set("system", ALLOWED_SYSTEMS)
-df_ge.expect_column_values_to_be_in_set("severity", ALLOWED_SEVERITIES)
-
-# Null checks
-for col in ["event_id", "event_template", "message"]:
-    df_ge.expect_column_values_to_not_be_null(col)
-
-# EventId format regex
-df_ge.expect_column_values_to_match_regex("event_id", r"^E\d+$")
-
-result = df_ge.validate()
-```
-
----
-
-## Anomaly Detection and Alerts
-
-### Centralized Alerting System
-
-All alerts flow through `src/utils/alerting.py`, which provides a unified Slack webhook-based alerting system:
-
-```python
-from src.utils.alerting import (
-    alert_pipeline_start,
-    alert_pipeline_success,
-    alert_pipeline_failure,
-    alert_anomaly_detected,
-    alert_validation_failure,
-    alert_bias_detected,
-)
-```
-
-### Slack Webhook Integration
-
-**Setup**:
-1. Create a Slack Incoming Webhook for your channel (e.g., `#automend-alerts`)
-2. Set `SLACK_WEBHOOK_URL` in your `.env` file
-3. Optionally set `SLACK_CHANNEL` for display purposes
-
-**Configuration** (`.env`):
-```bash
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
-SLACK_CHANNEL=#automend-alerts
-```
-
-**Alert Message Format**:
-- Rich Slack messages with color-coded severity
-- Emoji indicators per alert type (rocket for start, checkmark for success, X for failure)
-- Pipeline context and timestamp
-- Additional details dict for debugging
-
-**Example Alert (Pipeline Failure)**:
-```
-:x: Pipeline Failed
-DAG `ds1_alibaba_pipeline` failed at task `preprocess_data`.
-
-:gear: Pipeline: ds1_alibaba_pipeline
-Details:
-  dag_id: ds1_alibaba_pipeline
-  run_id: manual__2026-02-24T10:00:00
-  failed_task: preprocess_data
-  error: FileNotFoundError: Missing raw data file
-
-:clock1: 2026-02-24 10:15:32 UTC
-```
-
-### Alert Types and Severity
-
-| Alert Type | Severity | Slack Color | When Triggered |
-|------------|----------|-------------|----------------|
-| Pipeline Start | INFO | Green | DAG starts execution |
-| Pipeline Success | INFO | Green | DAG completes successfully |
-| Pipeline Failure | CRITICAL | Red | Task fails |
-| Anomaly Detected | WARNING/ERROR | Yellow/Orange | Data anomalies found (>10 = ERROR) |
-| Validation Failure | ERROR | Orange | Schema validation fails |
-| Bias Detected | WARNING/ERROR | Yellow/Orange | Data bias detected (high = ERROR) |
-| Data Quality Issue | WARNING | Yellow | Generic quality issues |
-
-### Alert Logging
-
-All alerts are logged regardless of Slack delivery:
-
-- **File Log**: `logs/alerts.log` - Human-readable log format
-- **History JSON**: `logs/alerts_history.json` - Last 1000 alerts in JSON format
-
-```python
-# Alert record structure in alerts_history.json
-{
-  "timestamp": "2026-02-24T10:15:32",
-  "type": "pipeline_failure",
-  "severity": "critical",
-  "title": "Pipeline Failed",
-  "message": "DAG `ds1_alibaba_pipeline` failed at task `preprocess_data`.",
-  "pipeline": "ds1_alibaba_pipeline",
-  "details": {"failed_task": "preprocess_data", "error": "..."}
-}
-```
-
-### Airflow Callbacks
-
-DAGs use failure callbacks for automatic Slack alerting:
-
-```python
-from src.utils.alerting import on_failure_callback, on_success_callback
-
-default_args = {
-    "on_failure_callback": on_failure_callback,  # Sends CRITICAL alert
-    # "on_success_callback": on_success_callback,  # Optional: sends INFO alert
-}
-```
-
-### Anomaly Detection
-
-Each dataset implements anomaly detection with automatic alerting:
-
-- **Missing values**: Check for nulls in required fields
-- **Outliers**: Statistical outlier detection
-- **Format violations**: Invalid JSON, malformed records
-- **Record counts**: Unexpected drops in data volume
-- **Schema violations**: Unexpected columns or types
-
-When anomalies are detected, alerts are sent automatically:
-
-```python
-# From ds1_alibaba_dag.py
-if anomalies:
-    alert_anomaly_detected(
-        pipeline_name="ds1_alibaba",
-        anomaly_count=len(anomalies),
-        anomaly_types=["Resource_Exhaustion", "System_Crash"],
-        details={"critical_count": 5}
-    )
+```powershell
+Remove-Item -Recurse -Force ..\dvc_storage       # Remote storage
+Remove-Item -Recurse -Force data\raw\*            # Raw data
+Remove-Item -Recurse -Force data\processed\*      # Processed data
+Remove-Item -Recurse -Force data\interim\*         # Interim data
+Remove-Item -Recurse -Force data\external\*        # External CSVs (DS3)
 ```
 
 ---
 
 ## Bias Detection and Mitigation
 
-### Per-Dataset Bias Detection
+Each dataset has dedicated bias detection using Polars for slicing and Fairlearn for metrics:
 
-Each dataset has dedicated bias detection scripts:
-
-| Dataset | Bias Detection Script | Slicing Features |
-|---------|----------------------|------------------|
-| DS1 (Alibaba) | `src/dataset_1_alibaba/scripts/bias_detection.py` | `status`, `task_type`, `label` |
-| DS2 (LogHub) | `src/dataset_2_loghub/src/bias/detect_bias.py` | `system`, `severity`, `event_type` |
-| DS3 (StackOverflow) | `src/dataset_3_stackoverflow/scripts/bias_detection.py` | Tags, answer quality |
-| DS5 (Glaive) | `src/dataset_5_glaive/scripts/bias_detection.py` | Function types, parameter distributions |
-| DS6 (The Stack) | `src/dataset_6_the_stack/scripts/validate/bias_detection.py` | Language, framework, file types |
-
-### Fairlearn Integration (DS1 Example)
-
-DS1 uses Fairlearn `MetricFrame` for comprehensive data slicing:
-
-```python
-# From src/dataset_1_alibaba/scripts/bias_detection.py
-from fairlearn.metrics import MetricFrame, selection_rate, count
-
-# Slice by status groups
-mf_status = MetricFrame(
-    metrics={
-        "selection_rate": selection_rate,
-        "count": count
-    },
-    y_true=df["is_failure"],
-    y_pred=df["is_failure"],
-    sensitive_features=df["status"]
-)
-
-# Log per-group metrics
-for group, row in mf_status.by_group.iterrows():
-    log.info(f"  {group}: failure_rate={row['selection_rate']:.2%}, count={int(row['count'])}")
-
-# Check for disparity between groups
-status_disparity = mf_status.difference(method="between_groups")
-if status_disparity["selection_rate"] > 0.1:
-    log.warning(f"BIAS DETECTED: High disparity: {status_disparity['selection_rate']:.4f}")
-```
-
-### Data Slicing Analysis
-
-**Track A (DS1 Alibaba)**:
-- **Slice by `status`**: Terminated, Failed, Running, Unknown
-- **Slice by `task_type`**: Top 5 most common batch job categories
-- **Slice by `label`**: Anomaly classes 0-4 (Normal through Data_Drift)
-
-**Track A (DS2 LogHub)**:
-- **Slice by `system`**: Linux, Hadoop, HDFS, Spark, HPC
-- **Slice by `severity`**: INFO, WARN, ERROR
-- **Slice by `event_type`**: auth_failure, network_issue, job_failed, etc.
-
-**Track B (DS3-6)**:
-- **Content type**: Question categories, tool types
-- **Prompt complexity**: Simple vs complex workflows
-- **Tool usage**: Distribution across available tools
-
-### Mitigation Techniques
-
-1. **Undersampling**: Reduce dominant classes (e.g., Normal label in DS1)
-2. **Oversampling**: Increase minority failure classes using random replacement
-3. **Fairness Constraints**: Apply during model training phase
-4. **Threshold Adjustment**: Per-group decision thresholds
-5. **Random Seed**: Set to 42 for reproducibility
-
-### Example Bias Report (DS1)
-
-Output: `data/processed/ds1_alibaba/bias_report.json`
-
-```json
-{
-  "fairlearn_analysis": {
-    "status_by_group": {
-      "selection_rate": {"Failed": 1.0, "Terminated": 0.0, "Running": 0.0},
-      "count": {"Failed": 15, "Terminated": 70, "Running": 15}
-    },
-    "status_disparity": 0.0832,
-    "bias_detected": false
-  },
-  "raw_data_slicing": {
-    "status_slice": {
-      "distribution": {"Terminated": 70.0, "Failed": 15.0, "Running": 15.0},
-      "bias_detected": false,
-      "dominant_classes": {}
-    },
-    "task_type_slice": {"distribution": {"1": 30.0, "2": 25.0, "3": 20.0}},
-    "failure_rate_by_task_type": {"1": 12.5, "2": 18.0, "3": 10.0}
-  },
-  "sequence_bias": {
-    "label_distribution": {
-      "Normal": 45.2,
-      "Resource_Exhaustion": 18.3,
-      "System_Crash": 12.1,
-      "Network_Failure": 14.2,
-      "Data_Drift": 10.2
-    },
-    "normal_dominance_pct": 45.2,
-    "bias_detected": false
-  },
-  "mitigation": {
-    "techniques_applied": [
-      "Fairlearn MetricFrame used for slice-based bias analysis",
-      "Undersampling of Normal class (label=0) to max 3x failure count",
-      "Oversampling of minority failure classes (labels 1-4) using random replacement",
-      "Random seed=42 for reproducibility"
-    ],
-    "before_mitigation": {
-      "issue": "Dataset highly imbalanced — most jobs succeed (Normal)",
-      "normal_dominance": "45.2% Normal before balancing"
-    },
-    "after_mitigation": {
-      "label_distribution": {"Normal": 45.2, "Resource_Exhaustion": 18.3},
-      "bias_resolved": true
-    },
-    "tradeoffs": [
-      "Oversampling may cause overfitting on minority classes with small datasets",
-      "Undersampling loses some Normal class information"
-    ]
-  }
-}
-```
+| Dataset | Slicing Features | Library |
+|---------|-----------------|---------|
+| DS1 (Alibaba) | `status`, `task_type`, `label` | Fairlearn + Polars→pandas bridge |
+| DS2 (LogHub) | `system`, `severity`, `event_type` | Polars |
+| DS3 (StackOverflow) | Tags, answer quality | Polars |
+| DS5 (Glaive) | Complexity tier, turn count, function calls | Polars |
+| DS6 (The Stack) | IaC type, license, file size | Polars |
 
 ---
 
 ## Testing
 
-### Test Structure
-
-```
-tests/                           # Root-level tests
-├── test_dags.py                # DAG integrity (load, tasks, dependencies)
-├── test_combiner_track_a.py    # Track A combiner
-├── test_combiner_track_b.py    # Track B combiner
-├── test_integration.py         # Data flow integration
-├── test_e2e.py                 # End-to-end pipeline
-├── test_schemas.py             # Schema validation
-└── test_dvc_config.py          # DVC configuration
-
-src/dataset_*/tests/            # Per-dataset tests
-└── test_pipeline.py            # Dataset-specific tests
-```
-
-### Running Tests
-
 ```bash
 # Run all tests
 python run_all_tests.py
-
-# Run root tests only
-python run_all_tests.py --root
 
 # Run specific dataset tests
 python run_all_tests.py --ds1
 python run_all_tests.py --ds2
 
 # Run with pytest directly
-pytest tests/ -v                 # Root tests
-pytest src/dataset_1_alibaba/tests/ -v  # DS1 tests
-
-# Run with coverage
-pytest --cov=src --cov-report=html
-
-# Run by marker
-pytest -m unit                   # Unit tests only
-pytest -m integration            # Integration tests
-pytest -m dag                    # DAG tests
-```
-
-### Test Markers
-
-```ini
-# pytest.ini
-markers =
-    unit: Unit tests
-    integration: Integration tests
-    e2e: End-to-end tests
-    dag: DAG integrity tests
-    dataset: Dataset-specific tests
+pytest tests/ -v                           # Root integration tests
+pytest src/dataset_1_alibaba/tests/ -v     # DS1 tests
+pytest --cov=src --cov-report=html         # With coverage
 ```
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
+### DAGs Not Showing in Airflow UI
 
-**DAGs not showing in Airflow UI**:
 ```bash
-# Check for import errors
 docker-compose exec airflow-scheduler python /opt/airflow/dags/master_track_a.py
-
-# View scheduler logs
 docker-compose logs airflow-scheduler | tail -50
 ```
 
-**Task failures**:
+### Ray Connection Issues
+
+Ray runs locally within each Airflow worker (no cluster connection needed in Docker Compose). If you see Ray errors:
+
+```bash
+# Check Ray head is running
+docker-compose ps ray-head
+docker-compose logs ray-head --tail 20
+
+# Restart services
+docker-compose restart airflow-scheduler airflow-webserver
+```
+
+### Task Failures
+
 1. Check task logs in Airflow UI (Task → Log)
 2. Common causes:
-   - Missing API keys (DS4)
-   - Network connectivity (DS2, DS5, DS6)
-   - Missing seed data (run `seed_all.py`)
-
-**Permission errors**:
-```bash
-# Fix file permissions
-echo "AIRFLOW_UID=$(id -u)" >> .env
-docker-compose down && docker-compose up -d
-```
-
-**DVC issues**:
-```bash
-# Reinitialize if needed
-dvc init --force
-
-# Check remote configuration
-dvc remote list -v
-```
+   - Missing API keys (`GOOGLE_API_KEY` for DS4, `HF_TOKEN` for DS6)
+   - Network connectivity (DS2/DS5/DS6 in sample/full mode)
+   - Memory limits (increase Docker Desktop memory to 6-8 GB)
 
 ### Docker Commands
 
 ```bash
-# Start services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-docker-compose logs airflow-scheduler
-
-# Stop services
-docker-compose down
-
-# Reset (removes volumes)
-docker-compose down -v
-
-# Rebuild
-docker-compose build --no-cache
+docker-compose up -d              # Start all services
+docker-compose down               # Stop services
+docker-compose down -v            # Stop and remove volumes (full reset)
+docker-compose logs -f            # Follow all logs
+docker-compose restart            # Restart all services
 ```
+
+---
 
 ## References
 
 - [Apache Airflow Documentation](https://airflow.apache.org/docs/)
+- [Ray Documentation](https://docs.ray.io/)
+- [Polars Documentation](https://docs.pola.rs/)
 - [DVC Documentation](https://dvc.org/doc)
-- [Great Expectations Documentation](https://docs.greatexpectations.io/)
 - [Fairlearn Documentation](https://fairlearn.org/)
 - [LogPAI/LogHub Repository](https://github.com/logpai/loghub)
 
@@ -982,47 +549,17 @@ docker-compose build --no-cache
 
 ## Dataset Licenses
 
-This project uses data from multiple sources. Each dataset has its own license that must be respected:
-
-| Dataset | Source | License | Notes |
-|---------|--------|---------|-------|
-| **DS1: Alibaba Cluster Trace 2017** | [alibaba/clusterdata](https://github.com/alibaba/clusterdata) | Research Use | Available for academic/research purposes. Check repository for current terms. |
-| **DS2: LogHub (LogPAI)** | [logpai/loghub](https://github.com/logpai/loghub) | **CC BY 4.0** | Must cite LogHub paper and include license notice. |
-| **DS3: StackOverflow** | [StackOverflow](https://stackoverflow.com/) | **CC BY-SA 4.0** | Attribution required. ShareAlike clause applies to derivatives. |
-| **DS4: Synthetic** | Generated | N/A | Synthetically generated using Google Gemini API. No external data license. |
-| **DS5: Glaive Function Calling v2** | [HuggingFace](https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2) | Check HuggingFace | Verify license on dataset page before use. |
-| **DS6: The Stack** | [bigcode/the-stack-dedup](https://huggingface.co/datasets/bigcode/the-stack-dedup) | **Permissive (varies)** | Contains permissively licensed code only. Must comply with original file licenses. |
-
-### License Compliance
-
-When using this project:
-
-1. **Attribution**: Cite the original data sources when publishing results
-2. **ShareAlike**: DS3 (StackOverflow) derivatives must use CC BY-SA 4.0
-3. **Research Use**: DS1 (Alibaba) is primarily for academic/research purposes
-4. **Opt-Out Compliance**: DS6 (The Stack) requires updating to latest version to respect opt-out requests
-5. **API Terms**: DS4 synthetic generation must comply with Google Gemini API terms of service
-
-### Required Citations
-
-**LogHub (DS2)**:
-```
-Jieming Zhu, Shilin He, Pinjia He, Jinyang Liu, Michael R. Lyu.
-"Loghub: A Large Collection of System Log Datasets for AI-driven Log Analytics."
-IEEE International Symposium on Software Reliability Engineering (ISSRE), 2023.
-```
-
-**The Stack (DS6)**:
-```
-Denis Kocetkov, Raymond Li, et al.
-"The Stack: 3 TB of permissively licensed source code."
-Preprint, 2022.
-```
+| Dataset | Source | License |
+|---------|--------|---------|
+| DS1: Alibaba Cluster Trace 2017 | [alibaba/clusterdata](https://github.com/alibaba/clusterdata) | Research Use |
+| DS2: LogHub (LogPAI) | [logpai/loghub](https://github.com/logpai/loghub) | CC BY 4.0 |
+| DS3: StackOverflow | [StackOverflow](https://stackoverflow.com/) | CC BY-SA 4.0 |
+| DS4: Synthetic | Generated via Gemini API | N/A |
+| DS5: Glaive Function Calling v2 | [HuggingFace](https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2) | Check HuggingFace |
+| DS6: The Stack | [bigcode/the-stack-dedup](https://huggingface.co/datasets/bigcode/the-stack-dedup) | Permissive (varies) |
 
 ---
 
 ## License
 
-This project code is developed as part of an MLOps course assignment.
-
-**Important**: The datasets used in this project have their own licenses as detailed above. Users must comply with all applicable dataset licenses when using or redistributing this project.
+This project code is developed as part of an MLOps course assignment. The datasets used have their own licenses as detailed above.

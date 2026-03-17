@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 DS2_SRC = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = DS2_SRC.parent.parent
+PROJECT_ROOT = DS2_SRC.parent.parent.parent  # .../src/dataset_2_loghub/src -> .../Automend
 sys.path.insert(0, str(DS2_SRC))
 sys.path.insert(0, str(PROJECT_ROOT))
 from utils.paths import get_ds2_processed_dir

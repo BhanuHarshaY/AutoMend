@@ -293,7 +293,7 @@ def run_preprocessing() -> dict:
             json.dump(processed_data, f, indent=2)
         
         df = pl.DataFrame(processed_data)
-        df.write_csv(config.processed_dir / "qa_pairs_processed.csv")
+        df.write_parquet(config.processed_dir / "qa_pairs_processed.parquet")
         
         stats.update({
             "output_records": len(processed_data),

@@ -69,8 +69,9 @@ def keyword_label(template: str):
     return None
 
 
-def pad_or_truncate(seq: list, max_len: int = MAX_LEN) -> list:
+def pad_or_truncate(seq, max_len: int = MAX_LEN) -> list:
     """Truncate from start (keep most recent) or pad end with zeros."""
+    seq = seq.to_list() if hasattr(seq, "to_list") else list(seq)
     if len(seq) > max_len:
         return seq[-max_len:]
     return seq + [0] * (max_len - len(seq))

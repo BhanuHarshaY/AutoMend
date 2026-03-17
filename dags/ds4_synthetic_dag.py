@@ -61,6 +61,14 @@ def ds4_synthetic_dag():
         log.info("DVC pull done")
 
     @task
+    def ensure_prompts():
+        from src.utils.data_acquire import ensure_data
+        log = pipeline_logger.get_logger("ds4_dag.ensure_prompts")
+        result = ensure_data("ds4", DS4_RAW, PROJECT_ROOT)
+        log.info("DS4 acquire: %s", result)
+        return result
+
+    @task
     def fetch_prompts():
         import sqlite3
         log = pipeline_logger.get_logger("ds4_dag.fetch_prompts")
@@ -197,6 +205,7 @@ def ds4_synthetic_dag():
         return result
 
     t1 = pull_data()
+    t1b = ensure_prompts()
     t2 = fetch_prompts()
     t3 = generate_synthetic_data(t2)
     t4 = format_data(t3)
@@ -204,7 +213,7 @@ def ds4_synthetic_dag():
     t6 = validate_and_alert(t5)
     t7 = export_to_interim(t6)
     t8 = commit_and_push(t7)
-    t1 >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8
+    t1 >> t1b >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8
 
 
 dag = ds4_synthetic_dag()

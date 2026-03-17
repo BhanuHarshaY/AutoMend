@@ -50,20 +50,35 @@ def fetch_and_save(
     """
     Stream dataset from HuggingFace, optionally using Ray Data for
     distributed download + parse. Falls back to sequential collection.
+
+    Parameters
+    ----------
+    sample_size : int | None
+        Max records to fetch.  ``None`` uses the ray_config default.
+        ``0`` means no limit (full dataset).
     Returns number of records saved.
     """
     cfg = get_dataset_config("ds5")
     if sample_size is None:
         sample_size = cfg.get("sample_size", 5000)
 
+    unlimited = sample_size == 0
+
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info("Starting streaming from HuggingFace: %s", dataset_name)
+    logger.info(
+        "Starting streaming from HuggingFace: %s (limit=%s)",
+        dataset_name,
+        "unlimited" if unlimited else sample_size,
+    )
 
     try:
         import ray
         init_ray()
-        hf_ds = load_dataset(dataset_name, split="train", streaming=True, trust_remote_code=True)
-        ds = ray.data.from_huggingface(hf_ds).limit(sample_size)
+        streaming = unlimited  # stream when unlimited to avoid OOM
+        hf_ds = load_dataset(dataset_name, split="train", streaming=streaming, trust_remote_code=True)
+        ds = ray.data.from_huggingface(hf_ds)
+        if not unlimited:
+            ds = ds.limit(sample_size)
         records = ds.take_all()
         logger.info("Collected %d records via Ray Data", len(records))
     except Exception as e:
@@ -71,11 +86,11 @@ def fetch_and_save(
         hf_ds = load_dataset(dataset_name, split="train", streaming=True, trust_remote_code=True)
         records = []
         for i, record in enumerate(hf_ds):
-            if i >= sample_size:
+            if not unlimited and i >= sample_size:
                 break
             records.append(record)
             if (i + 1) % 500 == 0:
-                logger.info("  Collected %d / %d records", i + 1, sample_size)
+                logger.info("  Collected %d records so far", i + 1)
 
     logger.info("Saving %d records to %s", len(records), output_file)
     with open(output_file, "w", encoding="utf-8") as f:

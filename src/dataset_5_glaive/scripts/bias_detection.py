@@ -59,9 +59,10 @@ def analyze_slice(df: pl.DataFrame, slice_col: str) -> pl.DataFrame:
     return groups.with_columns([
         (pl.col("count") / total).round(4).alias("proportion"),
         (pl.col("count") / total < REPRESENTATION_THRESHOLD).alias("is_underrepresented"),
-    ]).rename({slice_col: "slice_value"}).with_columns(
-        pl.lit(slice_col).alias("slice_column")
-    )
+    ]).rename({slice_col: "slice_value"}).with_columns([
+        pl.col("slice_value").cast(pl.Utf8),
+        pl.lit(slice_col).alias("slice_column"),
+    ])
 
 
 def detect_representation_bias(slice_df: pl.DataFrame) -> list:

@@ -64,34 +64,18 @@ with DAG(
 ) as dag:
 
     def task_data_acquisition(**context):
-        from data_acquisition import fetch_and_save
-        from src.utils.dvc_utils import check_raw_data_exists, version_raw_data
-        
+        from src.utils.data_acquire import ensure_data
+        result = ensure_data("ds5", DS5_RAW, PROJECT_ROOT)
+        logger.info("DS5 acquire: %s", result)
+
         output_file = DS5_RAW / "glaive_raw.jsonl"
-        
-        # Check if raw data exists locally or in DVC
-        if check_raw_data_exists(DS5_RAW, project_root=PROJECT_ROOT):
-            # Verify the expected file exists
-            if output_file.exists():
-                logger.info("Raw data found (local or DVC), skipping download")
-                # Count lines in existing file
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    count = sum(1 for _ in f)
-                context["ti"].xcom_push(key="record_count", value=count)
-                context["ti"].xcom_push(key="source", value="cached")
-                return count
-        
-        # Data not found - download fresh
-        DS5_RAW.mkdir(parents=True, exist_ok=True)
-        count = fetch_and_save(sample_size=5000, output_file=output_file)
-        logger.info("Acquired %d records", count)
-        
-        # Version the raw data after successful download
-        version_raw_data(str(DS5_RAW), cwd=str(PROJECT_ROOT))
-        logger.info("Raw data versioned with DVC")
-        
+        count = result.get("record_count", 0)
+        if count == 0 and output_file.exists():
+            with open(output_file, "r", encoding="utf-8") as f:
+                count = sum(1 for _ in f)
+
         context["ti"].xcom_push(key="record_count", value=count)
-        context["ti"].xcom_push(key="source", value="downloaded")
+        context["ti"].xcom_push(key="source", value=result.get("status", "unknown"))
         return count
 
     def task_preprocessing(**context):
@@ -109,13 +93,16 @@ with DAG(
         import json
         from schema_validation import load_processed_data, run_validation
         df = load_processed_data(DS5_PROCESSED / "glaive_processed.jsonl")
-        results = run_validation(df)
-        passed = sum(1 for v in results.values() if v)
-        failed = sum(1 for v in results.values() if not v)
-        total = len(results)
-        logger.info("Validation: %d/%d passed", passed, total)
+        report = run_validation(df)
+        passed = report["passed"]
+        failed = report["failed"]
+        logger.info("Validation: %d/%d passed", passed, report["total"])
         if failed > 0:
-            failed_checks = [k for k, v in results.items() if not v]
+            failed_checks = [r["check"] for r in report["results"] if not r["success"]]
+            logger.error("Failed checks: %s", failed_checks)
+            for r in report["results"]:
+                if not r["success"]:
+                    logger.error("  %s: %s", r["check"], r.get("detail", ""))
             alert_validation_failure(
                 pipeline_name="ds5_glaive",
                 failed_checks=failed_checks,

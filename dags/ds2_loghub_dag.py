@@ -47,17 +47,32 @@ sys.path.insert(0, str(DS2_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 def _setup_ds2_path():
-    """Ensure DS2 paths are in sys.path for task execution."""
+    """Ensure DS2 paths are in sys.path for task execution.
+
+    DS2 has a local ``utils`` package that collides with the project-level
+    ``src/utils``.  We force DS2's src dir to the front of sys.path and
+    evict any cached ``utils`` module so the next ``import utils`` resolves
+    to DS2's copy.
+    """
     import sys
     from pathlib import Path
     project_root = Path("/opt/airflow")
     if not (project_root / "src").exists():
         project_root = Path(__file__).resolve().parent.parent
     ds2_src = project_root / "src" / "dataset_2_loghub" / "src"
-    if str(ds2_src) not in sys.path:
-        sys.path.insert(0, str(ds2_src))
+
+    # Always force DS2 src to front of path
+    if str(ds2_src) in sys.path:
+        sys.path.remove(str(ds2_src))
+    sys.path.insert(0, str(ds2_src))
+
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
+
+    # Evict cached utils module so DS2's local utils is found
+    for mod_name in list(sys.modules):
+        if mod_name == "utils" or mod_name.startswith("utils."):
+            del sys.modules[mod_name]
 
 _alert_logger = logging.getLogger("airflow.alert")
 
@@ -88,26 +103,14 @@ dag = DAG(
 
 def task_verify_inputs():
     _setup_ds2_path()
+    from src.utils.data_acquire import ensure_data
+    result = ensure_data("ds2", DS2_RAW, PROJECT_ROOT)
+    _alert_logger.info("DS2 acquire: %s", result)
+
     from ingest.verify_inputs import verify_inputs
-    from src.utils.dvc_utils import check_raw_data_exists, version_raw_data
-    
-    # Check if raw data exists locally or in DVC
-    if check_raw_data_exists(DS2_RAW, project_root=PROJECT_ROOT):
-        _alert_logger.info("Raw data found (local or DVC)")
-        ok = verify_inputs()
-        if ok:
-            return {"status": "cached"}
-    
-    # Try verify_inputs which may download data
-    DS2_RAW.mkdir(parents=True, exist_ok=True)
-    ok = verify_inputs()
-    if not ok:
-        raise RuntimeError("Input verification failed — missing raw CSV files.")
-    
-    # Version the raw data after successful verification/download
-    version_raw_data(str(DS2_RAW), cwd=str(PROJECT_ROOT))
-    _alert_logger.info("Raw data versioned with DVC")
-    return {"status": "downloaded"}
+    if not verify_inputs():
+        raise RuntimeError("Input verification failed — missing raw CSV files after acquire.")
+    return result
 
 
 def task_normalize_linux():
@@ -162,9 +165,9 @@ def task_generate_statistics():
     _setup_ds2_path()
     from validate.generate_statistics import generate_statistics
     result = generate_statistics()
-    if result["ge_validation"]["success"] is False:
+    if result["polars_validation"]["success"] is False:
         raise RuntimeError(
-            "Schema validation (Great Expectations) FAILED — check statistics_report.json"
+            "Polars schema validation FAILED — check statistics_report.json"
         )
 
 

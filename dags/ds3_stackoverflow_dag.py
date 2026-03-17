@@ -108,31 +108,16 @@ def task_start_pipeline(**context):
     }
 
 
-def task_acquire_data(use_csv: bool = True, **context):
+def task_acquire_data(**context):
     import logging
-    from src.utils.dvc_utils import check_raw_data_exists, version_raw_data
     logger = logging.getLogger(__name__)
-    
+
     try:
-        # Check if raw data exists locally or in DVC
-        if check_raw_data_exists(DS3_RAW, project_root=PROJECT_ROOT):
-            logger.info("Raw data found (local or DVC), skipping download")
-            stats = {"status": "success", "source": "cached", "total_pairs": "cached"}
-            context['ti'].xcom_push(key='acquisition_stats', value=stats)
-            return stats
-        
-        # Data not found - run acquisition
-        DS3_RAW.mkdir(parents=True, exist_ok=True)
-        stats = run_acquisition(use_csv=use_csv)
-        context['ti'].xcom_push(key='acquisition_stats', value=stats)
-        if stats.get("status") != "success":
-            raise Exception(f"Acquisition failed: {stats.get('error')}")
-        
-        # Version the raw data after successful download
-        version_raw_data(str(DS3_RAW), cwd=str(PROJECT_ROOT))
-        logger.info("Raw data versioned with DVC")
-        stats["source"] = "downloaded"
-        return stats
+        from src.utils.data_acquire import ensure_data
+        result = ensure_data("ds3", DS3_RAW, PROJECT_ROOT)
+        logger.info("DS3 acquire: %s", result)
+        context['ti'].xcom_push(key='acquisition_stats', value=result)
+        return result
     except Exception as e:
         alert_pipeline_failure(
             context['dag'].dag_id, context['run_id'], 'acquire_data', str(e)
@@ -327,7 +312,7 @@ def task_end_pipeline(**context):
 
 with dag:
     start = PythonOperator(task_id='start_pipeline', python_callable=task_start_pipeline)
-    acquire = PythonOperator(task_id='acquire_data', python_callable=task_acquire_data, op_kwargs={'use_csv': True})
+    acquire = PythonOperator(task_id='acquire_data', python_callable=task_acquire_data)
     preprocess = PythonOperator(task_id='preprocess_data', python_callable=task_preprocess_data)
     validate = PythonOperator(task_id='validate_data', python_callable=task_validate_data)
     check_validation = BranchPythonOperator(task_id='check_validation', python_callable=task_check_validation)

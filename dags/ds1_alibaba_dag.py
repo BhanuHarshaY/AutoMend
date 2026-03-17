@@ -59,39 +59,10 @@ with DAG(
 ) as dag:
 
     def acquire():
-        from src.utils.dvc_utils import check_raw_data_exists, version_raw_data
-        
-        files = [
-            DS1_RAW / "server_usage_sample.csv",
-            DS1_RAW / "batch_task_sample.csv",
-            DS1_RAW / "server_event_sample.csv",
-        ]
-        
-        # Check if raw data exists locally or in DVC
-        if check_raw_data_exists(DS1_RAW, project_root=PROJECT_ROOT):
-            logger.info("[ACQUIRE] Raw data found (local or DVC)")
-            for f in files:
-                if not f.exists():
-                    raise FileNotFoundError(f"Missing after DVC pull: {f}")
-                print(f"[ACQUIRE] Found: {f}")
-            return {"status": "cached"}
-        
-        # Data not available - DS1 expects manual placement of CSVs
-        # If you have a download function, call it here
-        DS1_RAW.mkdir(parents=True, exist_ok=True)
-        
-        for f in files:
-            if not f.exists():
-                raise FileNotFoundError(
-                    f"Missing: {f}. Please download Alibaba Cluster Trace 2017 data "
-                    "and place CSV files in data/raw/ds1_alibaba/"
-                )
-            print(f"[ACQUIRE] Found: {f}")
-        
-        # Version the raw data after first successful acquisition
-        version_raw_data(str(DS1_RAW), cwd=str(PROJECT_ROOT))
-        logger.info("[ACQUIRE] Raw data versioned with DVC")
-        return {"status": "downloaded"}
+        from src.utils.data_acquire import ensure_data
+        result = ensure_data("ds1", DS1_RAW, PROJECT_ROOT)
+        logger.info("[ACQUIRE] %s", result)
+        return result
 
     def preprocess():
         from preprocess import run_preprocessing
