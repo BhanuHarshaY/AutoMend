@@ -34,6 +34,7 @@ datasets>=2.18.0
 # --- Config & logging ---
 pyyaml>=6.0
 loguru>=0.7.0
+python-dotenv>=1.0.0
 
 # --- Tracking ---
 wandb>=0.17.0

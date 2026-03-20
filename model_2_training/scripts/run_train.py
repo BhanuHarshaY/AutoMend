@@ -26,11 +26,15 @@ warnings.filterwarnings("ignore", category=UserWarning, message=".*torch.utils.c
 
 import yaml
 from loguru import logger
+from dotenv import load_dotenv
 
 # Ensure model_2_training parent (AutoMend root) is on sys.path
 _M2_ROOT = Path(__file__).resolve().parent.parent
 _AUTOMEND_ROOT = _M2_ROOT.parent
 sys.path.insert(0, str(_AUTOMEND_ROOT))
+
+# Load .env from AutoMend root (WANDB_API_KEY, HF_TOKEN, etc.)
+load_dotenv(_AUTOMEND_ROOT / ".env")
 
 from model_2_training.src.train.train_loop import run_training
 

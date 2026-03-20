@@ -38,6 +38,7 @@ Requires
 
 from __future__ import annotations
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -124,6 +125,8 @@ def build_mlx_lora_config(
     mlx_data_dir: Path,
     adapter_path: Path,
     iters: int,
+    wandb_project: str | None = None,
+    wandb_run_name: str | None = None,
 ) -> dict:
     """
     Build the YAML config dict for mlx_lm.lora.
@@ -169,6 +172,10 @@ def build_mlx_lora_config(
         "val_batches":      25,
         "save_every":       train_cfg.get("save_steps", 100),
         "grad_checkpoint":  True,   # saves memory on MPS
+
+        # W&B tracking (only added when project is configured)
+        **( {"wandb_project": wandb_project, "wandb_run_name": wandb_run_name}
+            if wandb_project else {} ),
     }
 
 
@@ -229,8 +236,12 @@ def run_mlx_training(
     iters = _compute_iters(train_cfg, mlx_data_dir / "train.jsonl")
 
     # --- Write YAML config ---
+    wandb_project  = os.environ.get("WANDB_PROJECT")
+    wandb_run_name = os.environ.get("WANDB_RUN_NAME")
     mlx_cfg = build_mlx_lora_config(
-        model_cfg, train_cfg, mlx_data_dir, adapter_path, iters
+        model_cfg, train_cfg, mlx_data_dir, adapter_path, iters,
+        wandb_project=wandb_project,
+        wandb_run_name=wandb_run_name,
     )
     with open(config_path, "w") as f:
         yaml.dump(mlx_cfg, f, default_flow_style=False, sort_keys=False)
