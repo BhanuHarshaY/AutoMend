@@ -39,6 +39,7 @@ Requires
 from __future__ import annotations
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -174,7 +175,9 @@ def build_mlx_lora_config(
         "grad_checkpoint":  True,   # saves memory on MPS
 
         # W&B tracking (only added when project is configured)
-        **( {"wandb_project": wandb_project, "wandb_run_name": wandb_run_name}
+        # report_to must be set to "wandb" to activate the WandBCallback in mlx-lm;
+        # wandb_project alone is not enough — mlx-lm defaults report_to to None.
+        **( {"report_to": "wandb", "wandb_project": wandb_project, "wandb_run_name": wandb_run_name}
             if wandb_project else {} ),
     }
 
@@ -225,7 +228,6 @@ def run_mlx_training(
         )
 
     mlx_data_dir = output_dir / "mlx_data"
-    adapter_path = output_dir / "best_model"
     config_path  = output_dir / "mlx_lora_config.yaml"
 
     # --- Prepare data ---
@@ -238,8 +240,13 @@ def run_mlx_training(
     # --- Write YAML config ---
     wandb_project  = os.environ.get("WANDB_PROJECT")
     wandb_run_name = os.environ.get("WANDB_RUN_NAME")
+    # mlx-lm names the W&B run after os.path.basename(adapter_path), so use the
+    # run name as the adapter directory so it appears correctly in the W&B UI.
+    # After training we rename it to best_model/ for consistent downstream access.
+    named_adapter_path = output_dir / (wandb_run_name or "best_model")
+    best_model_path    = output_dir / "best_model"
     mlx_cfg = build_mlx_lora_config(
-        model_cfg, train_cfg, mlx_data_dir, adapter_path, iters,
+        model_cfg, train_cfg, mlx_data_dir, named_adapter_path, iters,
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
     )
@@ -254,14 +261,21 @@ def run_mlx_training(
     logger.info(f"  Iters   : {iters}")
     logger.info(f"  LoRA r  : {train_cfg.get('lora_r', 16)}")
     logger.info(f"  LR      : {train_cfg.get('learning_rate', 2e-4)}")
-    logger.info(f"  Adapter : {adapter_path}")
+    logger.info(f"  Adapter : {named_adapter_path}")
     logger.info("=" * 60)
 
     cmd = [sys.executable, "-m", "mlx_lm", "lora", "--config", str(config_path)]
     subprocess.run(cmd, check=True)
 
-    logger.success(f"MLX training complete. Adapter saved → {adapter_path}")
-    return adapter_path
+    # Rename run-named adapter dir → best_model/ for consistent downstream access
+    if named_adapter_path != best_model_path and named_adapter_path.exists():
+        if best_model_path.exists():
+            shutil.rmtree(best_model_path)
+        named_adapter_path.rename(best_model_path)
+        logger.info(f"Adapter renamed: {named_adapter_path.name}/ → best_model/")
+
+    logger.success(f"MLX training complete. Adapter saved → {best_model_path}")
+    return best_model_path
 
 
 # ---------------------------------------------------------------------------
