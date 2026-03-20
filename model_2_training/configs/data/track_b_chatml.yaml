@@ -1,0 +1,28 @@
+# Path to the raw combined artifact from the data pipeline
+artifact_path: "data/processed/track_B_combined.jsonl"
+
+# Split output directory (relative to model_2_training/)
+splits_dir: "data/splits"
+
+# Split ratios (must sum to 1.0)
+train_ratio: 0.80
+val_ratio: 0.10
+test_ratio: 0.10
+
+# Reproducibility
+shuffle_seed: 42
+
+# Max sequence length for tokenization (used later)
+max_seq_length: 2048
+
+# How to handle malformed rows: "skip" or "raise"
+malformed_row_strategy: "skip"
+
+# Stratify splits by these metadata fields if present (optional)
+stratify_by:
+  - source_dataset
+
+# --- TESTING CAPS (set to null to use full split) ---
+max_train_samples: 200
+max_val_samples: 50
+max_test_samples: 50

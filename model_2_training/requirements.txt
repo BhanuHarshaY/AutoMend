@@ -1,0 +1,45 @@
+# ============================================================
+# Model 2 Training Pipeline — Requirements
+# Install: pip install -r requirements.txt
+#
+# IMPORTANT — platform-specific installs required:
+#   CUDA (Windows/Linux NVIDIA):
+#     pip install --pre torch torchvision torchaudio \
+#       --index-url https://download.pytorch.org/whl/nightly/cu128
+#     (stable cu126 does NOT support Blackwell / RTX 50xx GPUs)
+#
+#   MPS (Apple Silicon macOS):
+#     pip install mlx mlx-lm
+#     (bitsandbytes is not listed here — it is CUDA-only)
+#
+#   CPU:
+#     Standard torch from pip is fine (fp32 only, very slow)
+# ============================================================
+
+# --- Core ML (all platforms) ---
+torch>=2.1.0
+transformers>=4.40.0
+accelerate>=0.29.0
+
+# --- PEFT / LoRA (CUDA + CPU only — not used on MPS) ---
+peft>=0.10.0
+bitsandbytes>=0.43.0    # CUDA only; omit or ignore on MPS/CPU
+
+# --- Training ---
+trl>=0.8.0
+
+# --- Data ---
+datasets>=2.18.0
+
+# --- Config & logging ---
+pyyaml>=6.0
+loguru>=0.7.0
+
+# --- Tracking ---
+wandb>=0.17.0
+
+# --- Evaluation ---
+numpy>=1.24.0
+
+# --- Dev/test ---
+pytest>=7.4.0

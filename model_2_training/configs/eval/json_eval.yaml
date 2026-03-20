@@ -1,0 +1,15 @@
+# Generation settings
+max_new_tokens: 512
+temperature: 0.1
+top_p: 0.9
+do_sample: false
+
+# Output paths
+predictions_dir: "outputs/predictions"
+reports_dir: "outputs/reports"
+
+# Number of sample predictions to save for manual inspection
+num_samples_to_save: 50
+
+# Checkpoint to evaluate (overridable via CLI)
+checkpoint_path: "outputs/checkpoints/best_model"

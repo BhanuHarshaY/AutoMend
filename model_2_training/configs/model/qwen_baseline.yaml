@@ -1,0 +1,21 @@
+# HuggingFace model name
+model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+
+# Tokenizer (usually same as model)
+tokenizer_name: "Qwen/Qwen2.5-1.5B-Instruct"
+
+# Quantization: null, "4bit", or "8bit"
+quantization: "4bit"
+
+# Device map for model loading
+device_map: "auto"
+
+# LoRA target modules for Qwen architecture
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"

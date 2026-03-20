@@ -1,0 +1,13 @@
+{
+  "total_samples": 50,
+  "non_empty_count": 50,
+  "non_empty_rate": 1.0,
+  "starts_with_brace_rate": 1.0,
+  "ends_with_brace_rate": 0.98,
+  "json_parse_rate": 0.96,
+  "malformed_json_rate": 0.04,
+  "avg_output_length": 391.98,
+  "truncation_rate": 0.02,
+  "quote_balance_rate": 0.98,
+  "brace_balance_rate": 0.94
+}

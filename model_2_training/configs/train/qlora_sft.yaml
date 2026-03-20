@@ -1,0 +1,36 @@
+# Training hyperparameters
+output_dir: "outputs/checkpoints"
+num_train_epochs: 3
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-4
+weight_decay: 0.01
+lr_scheduler_type: "cosine"
+warmup_ratio: 0.05
+
+# Evaluation and saving
+evaluation_strategy: "steps"
+eval_steps: 100
+save_strategy: "steps"
+save_steps: 100
+save_total_limit: 3
+load_best_model_at_end: true
+metric_for_best_model: "eval_loss"
+greater_is_better: false
+
+# Logging
+logging_steps: 10
+report_to: "wandb"
+
+# LoRA config
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_bias: "none"
+
+# Misc
+fp16: false
+bf16: true
+dataloader_num_workers: 2
+remove_unused_columns: false
