@@ -147,8 +147,10 @@ def build_mlx_lora_config(
         # Training schedule
         "iters":              iters,
         "batch_size":         train_cfg.get("per_device_train_batch_size", 2),
-        "learning_rate":      float(train_cfg.get("learning_rate", 2e-4)),
-        "lr_schedule":        "cosine_decay",
+        "lr_schedule": {
+            "name":      "cosine_decay",
+            "arguments": [float(train_cfg.get("learning_rate", 2e-4)), iters],
+        },
         "warmup":             max(1, int(iters * train_cfg.get("warmup_ratio", 0.05))),
         "max_seq_length":     2048,
 
@@ -244,7 +246,7 @@ def run_mlx_training(
     logger.info(f"  Adapter : {adapter_path}")
     logger.info("=" * 60)
 
-    cmd = [sys.executable, "-m", "mlx_lm.lora", "--config", str(config_path)]
+    cmd = [sys.executable, "-m", "mlx_lm", "lora", "--config", str(config_path)]
     subprocess.run(cmd, check=True)
 
     logger.success(f"MLX training complete. Adapter saved → {adapter_path}")
