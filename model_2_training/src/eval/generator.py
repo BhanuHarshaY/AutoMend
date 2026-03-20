@@ -223,7 +223,13 @@ def _load_mlx(checkpoint_path: str | Path):
     if adapter_config.exists():
         with open(adapter_config) as f:
             ac = json.load(f)
-        base_name = ac.get("base_model_name_or_path", "Qwen/Qwen2.5-1.5B-Instruct")
+        # PEFT saves "base_model_name_or_path"; mlx-lm saves "base_model" or "model"
+        base_name = (
+            ac.get("base_model_name_or_path")
+            or ac.get("base_model")
+            or ac.get("model")
+            or "Qwen/Qwen2.5-1.5B-Instruct"
+        )
         logger.info(f"Loading MLX base model '{base_name}' + adapter from {checkpoint_path}")
         model, tokenizer = load(base_name, adapter_path=str(checkpoint_path))
     else:

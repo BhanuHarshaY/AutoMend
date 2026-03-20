@@ -411,9 +411,8 @@ python scripts/run_train.py \
 
 ```bash
 python scripts/run_eval.py \
-  --eval-config  configs/eval/json_eval.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --data-config  configs/data/track_b_chatml.yaml
+  --config     configs/eval/json_eval.yaml \
+  --checkpoint outputs/checkpoints/best_model
 ```
 
 Auto-detects CUDA/MPS/CPU and uses the appropriate inference backend.
@@ -430,9 +429,8 @@ Saves to `outputs/reports/val/`:
 
 ```bash
 python scripts/run_test.py \
-  --eval-config  configs/eval/json_eval.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --data-config  configs/data/track_b_chatml.yaml
+  --config     configs/eval/json_eval.yaml \
+  --checkpoint outputs/checkpoints/best_model
 ```
 
 > Run only once, after all hyperparameter decisions are final. Do not use test results to guide tuning.
@@ -540,7 +538,7 @@ Loss dropped 26% over 25 steps — model is learning the JSON schema.
 
 1. `prepare_mlx_data()` copies splits to `outputs/checkpoints/mlx_data/` in MLX chat format
 2. `build_mlx_lora_config()` writes a YAML config for `mlx_lm.lora`
-3. `python -m mlx_lm.lora --config mlx_lora_config.yaml` runs on Metal GPU
+3. `python -m mlx_lm lora --config mlx_lora_config.yaml` runs on Metal GPU
 4. Adapter saved to `outputs/checkpoints/best_model/` in MLX format
 5. Validation loss reported every `eval_steps` iterations
 
@@ -761,9 +759,8 @@ python scripts/run_train.py \
   --train-config configs/train/qlora_sft.yaml
 
 python scripts/run_eval.py \
-  --eval-config  configs/eval/json_eval.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --data-config  configs/data/track_b_chatml.yaml
+  --config     configs/eval/json_eval.yaml \
+  --checkpoint outputs/checkpoints/best_model
 ```
 
 **Expected results:**
@@ -796,15 +793,14 @@ python scripts/run_train.py \
   --train-config configs/train/qlora_sft.yaml
 
 python scripts/run_eval.py \
-  --eval-config  configs/eval/json_eval.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --data-config  configs/data/track_b_chatml.yaml
+  --config     configs/eval/json_eval.yaml \
+  --checkpoint outputs/checkpoints/best_model
 ```
 
 **What happens differently on MPS:**
 - `device.py` returns `"mps"` → `train_loop.py` routes to `_run_mlx_training()`
 - Data is converted to MLX chat format in `outputs/checkpoints/mlx_data/`
-- `mlx_lora_config.yaml` is written and `python -m mlx_lm.lora` is invoked
+- `mlx_lora_config.yaml` is written and `python -m mlx_lm lora` is invoked
 - Adapter is saved in MLX format to `best_model/`
 - Eval inference uses `mlx_lm.load()` + `mlx_lm.generate()` instead of HF
 
@@ -839,15 +835,13 @@ python scripts/run_train.py \
   --epochs 3
 
 python scripts/run_eval.py \
-  --eval-config  configs/eval/json_eval.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --data-config  configs/data/track_b_chatml.yaml
+  --config     configs/eval/json_eval.yaml \
+  --checkpoint outputs/checkpoints/best_model
 
 # Final test evaluation — run only once
 python scripts/run_test.py \
-  --eval-config  configs/eval/json_eval.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --data-config  configs/data/track_b_chatml.yaml
+  --config     configs/eval/json_eval.yaml \
+  --checkpoint outputs/checkpoints/best_model
 ```
 
 **Expected improvements over smoke test:**
