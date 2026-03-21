@@ -235,11 +235,16 @@ huggingface-cli login
 # Paste your HF token when prompted
 ```
 
-**W&B login** (optional):
+**W&B setup** — copy `.env.example` to `.env` and fill in your credentials:
 ```bash
-wandb login
-# Paste your W&B API key when prompted
+cp AutoMend/.env.example AutoMend/.env
+# Then edit .env and set:
+#   WANDB_API_KEY=your_wandb_api_key_here   ← from wandb.ai/settings
+#   WANDB_PROJECT=automend-model2
+#   WANDB_ENTITY=your_wandb_username_or_team
 ```
+
+`run_train.py` loads `.env` automatically — no manual `wandb login` needed.
 
 ---
 
@@ -584,13 +589,13 @@ W&B is integrated for CUDA and CPU runs. Each run is auto-named:
 ### Setup
 
 ```bash
-wandb login   # paste API key once — saved permanently
-
-# Or set in AutoMend/.env:
-WANDB_API_KEY=your_api_key
+# Set credentials in AutoMend/.env (copied from .env.example):
+WANDB_API_KEY=your_wandb_api_key_here   # from wandb.ai/settings
 WANDB_PROJECT=automend-model2
-WANDB_ENTITY=your-entity-name
+WANDB_ENTITY=your_wandb_username_or_team
 ```
+
+`run_train.py` calls `load_dotenv()` at startup — credentials are picked up automatically on every run, no `wandb login` required.
 
 ### Disable W&B
 
@@ -706,11 +711,11 @@ response = generate(model, tokenizer, prompt="...", max_tokens=512)
 **Error:** `TypeError: Trainer.__init__() got unexpected keyword argument 'tokenizer'`
 **Fix:** `trainer_factory.py` passes `processing_class=tokenizer` (the new name).
 
-### 4. W&B API key not loaded from `.env`
+### 4. W&B not connecting
 
-**Symptom:** W&B prompts for login even when `.env` has `WANDB_API_KEY`.
-**Cause:** W&B does not auto-read `.env` files.
-**Workaround:** `wandb login` once in the terminal — credentials persist in the conda env.
+**Symptom:** W&B prompts for login or run doesn't appear on wandb.ai.
+**Fix:** Make sure `AutoMend/.env` exists (copied from `.env.example`) and has `WANDB_API_KEY` set.
+`run_train.py` loads it automatically via `python-dotenv`. If the file is missing, W&B falls back to prompting for login.
 
 ### 5. bitsandbytes on MPS / CPU
 
