@@ -235,17 +235,21 @@ def _load_mlx(checkpoint_path: str | Path):
     else:
         logger.info(f"Loading MLX model from {checkpoint_path}")
         model, tokenizer = load(str(checkpoint_path))
+    
+    def _sum_sizes(obj):
+        if isinstance(obj, dict):
+            return sum(_sum_sizes(v) for v in obj.values())
+        if isinstance(obj, (list, tuple)):
+            return sum(_sum_sizes(v) for v in obj)
+        return getattr(obj, "size", 0)
 
-    def _count_mlx_params(node):
-        if isinstance(node, dict):
-            return sum(_count_mlx_params(v) for v in node.values())
-        if isinstance(node, list):
-            return sum(_count_mlx_params(v) for v in node)
-        return node.size if hasattr(node, "size") else 0
-
-    total = _count_mlx_params(model.parameters()) if hasattr(model, "parameters") else 0
+    total = _sum_sizes(model.parameters()) if hasattr(model, "parameters") else 0
     logger.info(f"MLX model loaded for inference — {total:,} parameters")
     return model, tokenizer
+    ######## modified
+    # total = sum(v.size for v in model.parameters().values()) if hasattr(model, "parameters") else 0
+    # logger.info(f"MLX model loaded for inference — {total:,} parameters")
+    # return model, tokenizer
 
 
 def _generate_mlx(
