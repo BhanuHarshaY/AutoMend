@@ -26,7 +26,6 @@ from loguru import logger
 from transformers import TrainingArguments, Trainer
 
 from model_2_training.src.utils.device import detect_device, get_device_config
-from model_2_training.src.train.callbacks import WandbStandardCallback
 
 
 def build_training_args(cfg: dict, output_dir: str | Path) -> TrainingArguments:
@@ -136,7 +135,6 @@ def build_trainer(
         data_collator=data_collator,
         # Transformers 5.x: tokenizer= renamed to processing_class=
         processing_class=tokenizer,
-        callbacks=[WandbStandardCallback()],
     )
 
     logger.info("Trainer assembled successfully.")
