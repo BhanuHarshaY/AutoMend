@@ -4,10 +4,10 @@
   "non_empty_rate": 1.0,
   "starts_with_brace_rate": 1.0,
   "ends_with_brace_rate": 1.0,
-  "json_parse_rate": 0.98,
-  "malformed_json_rate": 0.02,
-  "avg_output_length": 332.54,
+  "json_parse_rate": 1.0,
+  "malformed_json_rate": 0.0,
+  "avg_output_length": 365.26,
   "truncation_rate": 0.0,
-  "quote_balance_rate": 0.98,
-  "brace_balance_rate": 1.0
+  "quote_balance_rate": 1.0,
+  "brace_balance_rate": 0.96
 }

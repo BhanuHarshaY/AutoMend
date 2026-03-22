@@ -170,7 +170,7 @@ def build_mlx_lora_config(
         # Reporting / checkpointing
         "steps_per_report": train_cfg.get("logging_steps", 10),
         "steps_per_eval":   train_cfg.get("eval_steps", 100),
-        "val_batches":      25,
+        "val_batches":      -1,   # -1 = use full val set (matches CUDA behaviour)
         "save_every":       train_cfg.get("save_steps", 100),
         "grad_checkpoint":  True,   # saves memory on MPS
 

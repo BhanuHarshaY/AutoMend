@@ -1,18 +1,10 @@
 [
   {
-    "generated": "{\"workflow\": {\"steps\": []}, \"message\": \"Sure! Here's the updated skeleton code with the new constraint:\\n\\n```python\\ndef check_temperature(temp):\\n    if temp < 10:\\n        return \\\"It is too cold outside.\\\" # Add this line\\n    else:\\n        return \\\"The temperature is suitable for outdoor activities.\\\",}",
-    "reference": "{\"workflow\": {\"steps\": []}, \"message\": \"Sure, I can do that. Here's an updated skeleton code with the added constraint:\\n```\\n# Get the temperature from the user\\ntemperature = int(input(\\\"What is the temperature outside? \\\"))\\n# Check if the tem\"}",
+    "generated": "{\"workflow\": {\"steps\": []}, \"message\": \"To replace the word 'ball' with another word in your sentence using the `replace` method of strings in Python, you can do the following:\\n```python\\nsentence = \\\"The player kicked the ball.\\\"\n\"}",
+    "reference": "{\"workflow\": {\"steps\": []}, \"message\": \"To make the sentence active, you need to change the object of the sentence to the subject. In this case, the object is \\\"the ball\\\" and the subject is \\\"the player\\\". To use the `replace` method to accomp\"}",
     "error_reason": "json_parse_failed",
     "is_empty": false,
     "starts_brace": true,
     "ends_brace": true
-  },
-  {
-    "generated": "{\"workflow\": {\"steps\": []}, \"message\": \"Sure, I can help you with that! Here's a sample Python code that generates user stories for a mobile app designed for online streaming service:\\n\\n```python\\ndef generate_user_stories(app_name):\\n    # Define the app name\\n    app_name = \\\"Online Streaming Service\\\"\\n\\n    # Define the user types\\n    user_types = [\"casual viewer\", \"binge-watcher\", \"film enthusiast\", \"family with kids\"]\\n\\n    # Define the constraints\\n    constraints = [\\n        {\"storag",
-    "reference": "{\"workflow\": {\"steps\": []}, \"message\": \"Sure, I can help with that! Here's a Python code that generates 10 user stories for a mobile app designed for online streaming service:\\n```\\nimport random\\n# Define lists of possible user behaviors and \"}",
-    "error_reason": "json_parse_failed",
-    "is_empty": false,
-    "starts_brace": true,
-    "ends_brace": false
   }
 ]

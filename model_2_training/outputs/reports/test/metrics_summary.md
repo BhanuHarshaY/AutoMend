@@ -1,7 +1,7 @@
-# Model 2 Evaluation Report — Validation Set
+# Model 2 Evaluation Report — Test Set
 
-**Generated:** 2026-03-22 12:12:24  
-**Split:** validation  
+**Generated:** 2026-03-22 12:18:59  
+**Split:** test  
 **Total samples:** 50  
 
 ## JSON Structural Quality Metrics
@@ -11,12 +11,12 @@
 | Non-empty output rate | 100.0% |
 | Starts with brace `{` or `[` | 100.0% |
 | Ends with brace `}` or `]` | 100.0% |
-| JSON parse success rate | 98.0% |
-| Malformed JSON rate | 2.0% |
+| JSON parse success rate | 100.0% |
+| Malformed JSON rate | 0.0% |
 | Truncation rate | 0.0% |
-| Quote balance rate | 98.0% |
-| Brace balance rate | 100.0% |
-| Average output length (chars) | 332.5 |
+| Quote balance rate | 100.0% |
+| Brace balance rate | 96.0% |
+| Average output length (chars) | 365.3 |
 
 ## Interpretation
 
