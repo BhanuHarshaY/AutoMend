@@ -4,7 +4,7 @@ transforms each row via payload_preprocess.py, validates the output,
 and writes training records to data/processed/ds6_the_stack/training_records.jsonl.
 
 Preferred path: Ray Data distributed map/filter across all chunks.
-Fallback:       sequential chunk-at-a-time processing (original behaviour).
+Fallback:       sequential chunk-at-a-time processing.
 """
 import json
 import logging
@@ -17,27 +17,31 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-DS6_ROOT = Path(__file__).parents[2]
+PREPROCESS_DIR = Path(__file__).resolve().parent
+DS6_ROOT = PREPROCESS_DIR.parent.parent
 PROJECT_ROOT = DS6_ROOT.parent.parent
-sys.path.insert(0, str(DS6_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.preprocess.payload_preprocess import (
+for p in (PREPROCESS_DIR, DS6_ROOT, PROJECT_ROOT):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+from payload_preprocess import (
     build_redactors,
     build_prompt_rules,
     process_row,
 )
-from src.config.ray_config import init_ray, get_dataset_config
+from src.config.ray_config import init_ray
 
 CFG = yaml.safe_load((DS6_ROOT / "config/iac_analysis.yaml").read_text())
 
 try:
     from src.config.paths import get_ds6_raw_dir, get_ds6_processed_dir, LOGS_DIR
-    RAW  = get_ds6_raw_dir()
+
+    RAW = get_ds6_raw_dir()
     PROC = get_ds6_processed_dir()
     LOGS = LOGS_DIR
 except ImportError:
-    RAW  = DS6_ROOT / CFG["paths"]["raw_dir"]
+    RAW = DS6_ROOT / CFG["paths"]["raw_dir"]
     PROC = DS6_ROOT / CFG["paths"]["processed_dir"]
     LOGS = DS6_ROOT / CFG["paths"]["logs_dir"]
 
@@ -54,7 +58,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-REDACTORS    = build_redactors(CFG)
+REDACTORS = build_redactors(CFG)
 PROMPT_RULES = build_prompt_rules(CFG)
 
 
@@ -62,19 +66,41 @@ PROMPT_RULES = build_prompt_rules(CFG)
 def validate(record: dict) -> tuple[bool, str]:
     """
     Round-trip check on the assistant content:
-      1. Must be valid JSON.
-      2. manifest_content inside must be valid YAML.
+
+      1. messages must be in system / user / assistant order
+      2. assistant content must be valid JSON
+      3. JSON must follow workflow.steps shape
+      4. manifest_content inside the first step must be valid YAML
     """
     try:
-        parsed   = json.loads(record["messages"][1]["content"])
-        manifest = parsed["params"]["manifest_content"]
+        messages = record["messages"]
+        if len(messages) != 3:
+            return False, "bad_message_count"
+
+        roles = [m.get("role") for m in messages]
+        if roles != ["system", "user", "assistant"]:
+            return False, "bad_message_roles"
+
+        parsed = json.loads(messages[2]["content"])
+
+        workflow = parsed["workflow"]
+        steps = workflow["steps"]
+        if not isinstance(steps, list) or not steps:
+            return False, "missing_steps"
+
+        first_step = steps[0]
+        if first_step["tool"] != "apply_manifest":
+            return False, "wrong_tool"
+
+        manifest = first_step["params"]["manifest_content"]
         yaml.safe_load(manifest)
         return True, "ok"
+
     except json.JSONDecodeError:
         return False, "invalid_json"
     except yaml.YAMLError:
         return False, "invalid_yaml_after_wrap"
-    except KeyError as e:
+    except (KeyError, IndexError, TypeError) as e:
         return False, f"missing_key:{e}"
 
 
@@ -90,7 +116,6 @@ def _transform_row(row: dict) -> dict | None:
 
 # ── Ray Data path ─────────────────────────────────────────────────────
 def _run_ray(out_path: Path) -> Counter:
-    import ray
     import ray.data
 
     init_ray()
@@ -165,7 +190,7 @@ def run() -> None:
 
     elapsed = time.time() - t0
     n, w = stats["total"], stats["written"]
-    pct = lambda x: f"{x/n*100:.1f}%" if n else "n/a"
+    pct = lambda x: f"{x / n * 100:.1f}%" if n else "n/a"
 
     log.info("Pipeline complete in %.1fs", elapsed)
     log.info("Rows read: %d | Written: %d (%s yield)", n, w, pct(w))
