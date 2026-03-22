@@ -1,9 +1,10 @@
 """
 Validates every training record in training_records.jsonl:
   - Required fields present (messages, _meta)
-  - messages has exactly 2 turns (user + assistant)
+  - messages has exactly 3 turns (system + user + assistant)
   - assistant content is valid JSON
-  - manifest_content inside is valid YAML
+  - assistant content follows workflow.steps shape
+  - manifest_content inside the first step is valid YAML
   - No PII leaked through redaction
   - Content length within bounds
 
@@ -49,7 +50,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-REQUIRED_TOP_KEYS  = {"messages", "_meta"}
+REQUIRED_TOP_KEYS = {"messages", "_meta"}
 REQUIRED_META_KEYS = {"hexsha", "path", "size", "licenses"}
 PII_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9]{20,}"),
@@ -70,19 +71,25 @@ def validate_record(record: dict) -> tuple[bool, list[str]]:
             violations.append(f"missing_top_key:{k}")
 
     msgs = record.get("messages", [])
-    if len(msgs) != 2:
+    if len(msgs) != 3:
         violations.append(f"wrong_message_count:{len(msgs)}")
     else:
-        if msgs[0].get("role") != "user":
-            violations.append("first_role_not_user")
-        if msgs[1].get("role") != "assistant":
-            violations.append("second_role_not_assistant")
+        if msgs[0].get("role") != "system":
+            violations.append("first_role_not_system")
+        if msgs[1].get("role") != "user":
+            violations.append("second_role_not_user")
+        if msgs[2].get("role") != "assistant":
+            violations.append("third_role_not_assistant")
 
-        prompt = msgs[0].get("content", "")
+        system_text = msgs[0].get("content", "")
+        if not isinstance(system_text, str) or not system_text.strip():
+            violations.append("empty_system_prompt")
+
+        prompt = msgs[1].get("content", "")
         if not isinstance(prompt, str) or not prompt.strip():
             violations.append("empty_prompt")
 
-        assistant = msgs[1].get("content", "")
+        assistant = msgs[2].get("content", "")
         try:
             parsed = json.loads(assistant)
         except json.JSONDecodeError as e:
@@ -90,20 +97,37 @@ def validate_record(record: dict) -> tuple[bool, list[str]]:
             parsed = None
 
         if parsed is not None:
-            if parsed.get("tool") != "apply_manifest":
-                violations.append("wrong_tool_name")
-            manifest = parsed.get("params", {}).get("manifest_content", "")
-            if not manifest:
-                violations.append("empty_manifest_content")
+            workflow = parsed.get("workflow")
+            if not isinstance(workflow, dict):
+                violations.append("missing_workflow")
             else:
-                try:
-                    yaml.safe_load(manifest)
-                except yaml.YAMLError as e:
-                    violations.append(f"manifest_invalid_yaml:{e}")
+                steps = workflow.get("steps")
+                if not isinstance(steps, list) or not steps:
+                    violations.append("missing_steps")
+                else:
+                    first_step = steps[0]
+                    if not isinstance(first_step, dict):
+                        violations.append("bad_first_step")
+                    else:
+                        if first_step.get("tool") != "apply_manifest":
+                            violations.append("wrong_tool_name")
 
-                for pat in PII_PATTERNS:
-                    if pat.search(manifest):
-                        violations.append(f"pii_leaked:{pat.pattern[:20]}")
+                        params = first_step.get("params", {})
+                        if not isinstance(params, dict):
+                            violations.append("bad_params")
+                        else:
+                            manifest = params.get("manifest_content", "")
+                            if not manifest:
+                                violations.append("empty_manifest_content")
+                            else:
+                                try:
+                                    yaml.safe_load(manifest)
+                                except yaml.YAMLError as e:
+                                    violations.append(f"manifest_invalid_yaml:{e}")
+
+                                for pat in PII_PATTERNS:
+                                    if pat.search(manifest):
+                                        violations.append(f"pii_leaked:{pat.pattern[:20]}")
 
     meta = record.get("_meta", {})
     for k in REQUIRED_META_KEYS:
@@ -116,18 +140,26 @@ def validate_record(record: dict) -> tuple[bool, list[str]]:
 def _extract_stats_row(record: dict) -> dict | None:
     """Extract numeric fields from a valid record for Polars aggregation."""
     msgs = record.get("messages", [])
-    if len(msgs) != 2:
+    if len(msgs) != 3:
         return None
+
+    manifest = ""
     try:
-        parsed = json.loads(msgs[1].get("content", "{}"))
-        manifest = parsed.get("params", {}).get("manifest_content", "")
+        parsed = json.loads(msgs[2].get("content", "{}"))
+        workflow = parsed.get("workflow", {})
+        steps = workflow.get("steps", [])
+        if steps and isinstance(steps[0], dict):
+            params = steps[0].get("params", {})
+            if isinstance(params, dict):
+                manifest = params.get("manifest_content", "")
     except Exception:
         manifest = ""
 
     return {
-        "prompt_length":   len(msgs[0].get("content", "")),
+        "system_length": len(msgs[0].get("content", "")),
+        "prompt_length": len(msgs[1].get("content", "")),
         "manifest_length": len(manifest),
-        "source_size":     int((record.get("_meta") or {}).get("size") or 0),
+        "source_size": int((record.get("_meta") or {}).get("size") or 0),
     }
 
 
@@ -136,6 +168,7 @@ def compute_stats_polars(valid_records: list[dict]) -> dict:
     rows = [r for rec in valid_records if (r := _extract_stats_row(rec)) is not None]
     if not rows:
         return {
+            "system_length_chars": {},
             "prompt_length_chars": {},
             "manifest_length_chars": {},
             "source_file_size": {},
@@ -154,14 +187,15 @@ def compute_stats_polars(valid_records: list[dict]) -> dict:
         return {k: v for k, v in s.items() if v is not None}
 
     return {
-        "prompt_length_chars":   _col_stats("prompt_length"),
+        "system_length_chars": _col_stats("system_length"),
+        "prompt_length_chars": _col_stats("prompt_length"),
         "manifest_length_chars": _col_stats("manifest_length"),
-        "source_file_size":      _col_stats("source_size"),
+        "source_file_size": _col_stats("source_size"),
     }
 
 
 def run_validation() -> dict:
-    in_path  = _PROC / "training_records.jsonl"
+    in_path = _PROC / "training_records.jsonl"
     out_path = _LOGS / "schema_report.json"
     _LOGS.mkdir(parents=True, exist_ok=True)
 
@@ -182,8 +216,9 @@ def run_validation() -> dict:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 invalid += 1
-                violation_counts["unparseable_line"] = \
+                violation_counts["unparseable_line"] = (
                     violation_counts.get("unparseable_line", 0) + 1
+                )
                 continue
 
             ok, violations = validate_record(record)
@@ -198,17 +233,21 @@ def run_validation() -> dict:
     stats = compute_stats_polars(valid_records)
 
     report = {
-        "total":            total,
-        "valid":            valid,
-        "invalid":          invalid,
-        "pass_rate_pct":    round(valid / total * 100, 2) if total else 0,
+        "total": total,
+        "valid": valid,
+        "invalid": invalid,
+        "pass_rate_pct": round(valid / total * 100, 2) if total else 0,
         "violation_counts": violation_counts,
-        "statistics":       stats,
+        "statistics": stats,
     }
 
     out_path.write_text(json.dumps(report, indent=2))
-    log.info("Schema validation: %d/%d passed (%.1f%%)", valid, total,
-             report["pass_rate_pct"])
+    log.info(
+        "Schema validation: %d/%d passed (%.1f%%)",
+        valid,
+        total,
+        report["pass_rate_pct"],
+    )
     if violation_counts:
         log.warning("Violations found: %s", violation_counts)
 
