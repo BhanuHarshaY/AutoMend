@@ -1,7 +1,7 @@
 """
 Export Dataset 6 (The Stack) output to the standardized interim location.
 
-Reads:  data/processed/ds6_the_stack/training_records.jsonl
+Reads:  data/processed/ds6_the_stack/training_records_balanced.jsonl
 Output: data/interim/ds6_the_stack.jsonl
 
 This script copies the training records JSONL to the monorepo's data/interim/ folder
@@ -19,11 +19,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
     from src.config.paths import get_ds6_processed_dir, get_ds6_interim_path
-    INPUT_PATH = get_ds6_processed_dir() / "training_records.jsonl"
+    INPUT_PATH = get_ds6_processed_dir() / "training_records_balanced.jsonl"
     OUTPUT_PATH = get_ds6_interim_path()
 except ImportError:
     DATASET_DIR = SCRIPT_DIR.parent
-    INPUT_PATH = DATASET_DIR / "data" / "processed" / "training_records.jsonl"
+    INPUT_PATH = DATASET_DIR / "data" / "processed" / "ds6_the_stack" / "training_records_balanced.jsonl"
     OUTPUT_PATH = PROJECT_ROOT / "data" / "interim" / "ds6_the_stack.jsonl"
 
 logging.basicConfig(
