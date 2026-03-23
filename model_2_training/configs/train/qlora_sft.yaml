@@ -1,13 +1,13 @@
 # Training hyperparameters
 output_dir: "outputs/checkpoints"
 num_train_epochs: 3
-per_device_train_batch_size: 2
+per_device_train_batch_size: 4
 per_device_eval_batch_size: 2
-gradient_accumulation_steps: 1
-learning_rate: 2.0e-4
-weight_decay: 0.01
-lr_scheduler_type: "cosine"
-warmup_ratio: 0.05
+gradient_accumulation_steps: 16
+learning_rate: 0.00011858737373894044
+weight_decay: 0.1
+lr_scheduler_type: "constant_with_warmup"
+warmup_ratio: 0.03
 
 # Evaluation and saving
 evaluation_strategy: "steps"

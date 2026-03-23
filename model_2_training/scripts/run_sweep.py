@@ -153,16 +153,30 @@ def run_sweep_trial(dry_run: bool = False) -> None:
             split_name="benchmark",
         )
 
-        # Log to W&B under benchmark/ prefix so the sweep objective can find them
+        # Log to W&B under benchmark/ prefix so the sweep objective can find them.
+        # Also log short-named aliases for metrics the sweep objective references
+        # (objective is "benchmark/tax_valid_rate", but the full key is
+        #  "benchmark/phase1_structural/tax_valid_rate").
         benchmark_metrics = {
             f"benchmark/{k}": v
             for k, v in metrics.items()
             if isinstance(v, (int, float))
         }
+        # Short aliases for sweep objective + early stopping
+        _alias_map = {
+            "phase1_structural/tax_valid_rate":        "tax_valid_rate",
+            "phase1_structural/json_parse_rate":       "json_parse_rate",
+            "phase1_structural/non_empty_rate":        "non_empty_rate",
+            "phase2a_schema/schema_valid_rate":        "schema_valid_rate",
+            "phase2c_params/full_param_validity_rate": "full_param_validity_rate",
+        }
+        for full_key, short_key in _alias_map.items():
+            if full_key in metrics:
+                benchmark_metrics[f"benchmark/{short_key}"] = metrics[full_key]
         wandb.log(benchmark_metrics)
         logger.success(f"Sweep trial complete — benchmark metrics logged.")
-        logger.info(f"  benchmark/tax_valid_rate  : {metrics.get('tax_valid_rate', 'N/A')}")
-        logger.info(f"  benchmark/json_parse_rate : {metrics.get('json_parse_rate', 'N/A')}")
+        logger.info(f"  benchmark/tax_valid_rate  : {metrics.get('phase1_structural/tax_valid_rate', 'N/A')}")
+        logger.info(f"  benchmark/json_parse_rate : {metrics.get('phase1_structural/json_parse_rate', 'N/A')}")
 
 
 def parse_args() -> argparse.Namespace:

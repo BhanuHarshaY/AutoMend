@@ -80,16 +80,16 @@ Airflow serves as the **sole orchestrator** for all pipelines. DVC is used **onl
 
 ### Processing Stack
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| Orchestration | Apache Airflow | DAG scheduling, task dependencies, retries |
-| Processing | Ray (Tasks, Data, Actors) | Parallel/distributed data processing |
-| DataFrames | Polars | Vectorized data transformations (replaces pandas) |
-| Validation | Polars-native checks | Schema validation, data quality (replaces Great Expectations) |
-| Bias Detection | Fairlearn + Polars | Data slicing, fairness metrics |
-| Data Versioning | DVC | Track and version data artifacts |
-| Alerting | Slack Webhooks | Pipeline event notifications |
-| Containerization | Docker Compose | Airflow + Ray + Postgres |
+| Layer            | Technology                | Purpose                                                       |
+| ---------------- | ------------------------- | ------------------------------------------------------------- |
+| Orchestration    | Apache Airflow            | DAG scheduling, task dependencies, retries                    |
+| Processing       | Ray (Tasks, Data, Actors) | Parallel/distributed data processing                          |
+| DataFrames       | Polars                    | Vectorized data transformations (replaces pandas)             |
+| Validation       | Polars-native checks      | Schema validation, data quality (replaces Great Expectations) |
+| Bias Detection   | Fairlearn + Polars        | Data slicing, fairness metrics                                |
+| Data Versioning  | DVC                       | Track and version data artifacts                              |
+| Alerting         | Slack Webhooks            | Pipeline event notifications                                  |
+| Containerization | Docker Compose            | Airflow + Ray + Postgres                                      |
 
 ### Individual Dataset DAG Tasks (example for DS1)
 
@@ -110,15 +110,15 @@ Each DAG's `acquire_data` task is **self-contained**: if raw data is missing, it
 
 **Target Model**: BERT-based Sequence Classifier (LogBERT)
 
-| Label | Class | Description | Source |
-|-------|-------|-------------|--------|
-| 0 | Normal | No anomaly detected | DS1, DS2 |
-| 1 | Resource_Exhaustion | High memory/CPU usage, OOM | DS1, DS2 |
-| 2 | System_Crash | Failed jobs, executor failures | DS1, DS2 |
-| 3 | Network_Failure | Timeout, unreachable hosts | DS1, DS2 |
-| 4 | Data_Drift | Checksum errors, verification failures | DS1, DS2 |
-| 5 | Auth_Failure | Authentication failures | DS2 only |
-| 6 | Permission_Denied | Access denied errors | DS2 only |
+| Label | Class               | Description                            | Source   |
+| ----- | ------------------- | -------------------------------------- | -------- |
+| 0     | Normal              | No anomaly detected                    | DS1, DS2 |
+| 1     | Resource_Exhaustion | High memory/CPU usage, OOM             | DS1, DS2 |
+| 2     | System_Crash        | Failed jobs, executor failures         | DS1, DS2 |
+| 3     | Network_Failure     | Timeout, unreachable hosts             | DS1, DS2 |
+| 4     | Data_Drift          | Checksum errors, verification failures | DS1, DS2 |
+| 5     | Auth_Failure        | Authentication failures                | DS2 only |
+| 6     | Permission_Denied   | Access denied errors                   | DS2 only |
 
 **Output Format (Format A)**: Parquet with columns `sequence_ids` (List[int]) and `label` (int 0-6)
 
@@ -273,12 +273,14 @@ docker-compose logs -f airflow-init
 ```
 
 Services:
+
 - **Airflow UI**: http://localhost:8080 (username: `airflow`, password: `airflow`)
 - **Ray Dashboard**: http://localhost:8265
 
 ### 5. Run Pipelines
 
 In the Airflow UI:
+
 1. Enable the desired DAG (toggle on)
 2. Click "Trigger DAG"
 3. Monitor in Graph or Tree view
@@ -299,14 +301,14 @@ The `PIPELINE_DATA_MODE` environment variable controls how each pipeline acquire
 
 ### Mode Comparison
 
-| Dataset | `dummy` (offline) | `sample` (capped download) | `full` (complete) |
-|---------|-------------------|---------------------------|-------------------|
-| DS1 (Alibaba) | 100-row synthetic CSVs | 1,000-row synthetic CSVs | Manual CSV placement required |
-| DS2 (LogHub) | 50-row synthetic log CSVs | 2K-row CSVs from GitHub | Same as sample (max available) |
-| DS3 (StackOverflow) | 50-row synthetic Q&A | 500 questions via API | Unlimited API queries |
-| DS4 (Synthetic) | 15 seed prompts + Gemini | 15 prompts + Gemini | 100 expanded prompts + Gemini |
-| DS5 (Glaive) | 100 synthetic JSONL records | 5,000 records from HuggingFace | Full dataset from HuggingFace |
-| DS6 (The Stack) | 50 synthetic parquet records | 20,000 records from HuggingFace | Full dataset (needs HF_TOKEN) |
+| Dataset             | `dummy` (offline)            | `sample` (capped download)      | `full` (complete)              |
+| ------------------- | ---------------------------- | ------------------------------- | ------------------------------ |
+| DS1 (Alibaba)       | 100-row synthetic CSVs       | 1,000-row synthetic CSVs        | Manual CSV placement required  |
+| DS2 (LogHub)        | 50-row synthetic log CSVs    | 2K-row CSVs from GitHub         | Same as sample (max available) |
+| DS3 (StackOverflow) | 50-row synthetic Q&A         | 500 questions via API           | Unlimited API queries          |
+| DS4 (Synthetic)     | 15 seed prompts + Gemini     | 15 prompts + Gemini             | 100 expanded prompts + Gemini  |
+| DS5 (Glaive)        | 100 synthetic JSONL records  | 5,000 records from HuggingFace  | Full dataset from HuggingFace  |
+| DS6 (The Stack)     | 50 synthetic parquet records | 20,000 records from HuggingFace | Full dataset (needs HF_TOKEN)  |
 
 ### When to Use Each Mode
 
@@ -333,25 +335,25 @@ docker-compose up -d
 
 ### Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `PIPELINE_DATA_MODE` | No | `dummy` | Data acquisition mode: `dummy`, `sample`, or `full` |
-| `GOOGLE_API_KEY` | For DS4 | - | Google Gemini API key for synthetic workflow generation |
-| `HF_TOKEN` | For DS6 full | - | HuggingFace token for gated dataset access |
-| `SLACK_WEBHOOK_URL` | No | - | Slack incoming webhook URL for alerts |
-| `SLACK_CHANNEL` | No | `#automend-alerts` | Slack channel display name |
-| `RAY_NUM_CPUS` | No | `4` | Number of CPUs for Ray workers |
-| `RAY_OBJECT_STORE_MB` | No | `512` | Ray object store memory in MB |
+| Variable              | Required     | Default            | Description                                             |
+| --------------------- | ------------ | ------------------ | ------------------------------------------------------- |
+| `PIPELINE_DATA_MODE`  | No           | `dummy`            | Data acquisition mode: `dummy`, `sample`, or `full`     |
+| `GOOGLE_API_KEY`      | For DS4      | -                  | Google Gemini API key for synthetic workflow generation |
+| `HF_TOKEN`            | For DS6 full | -                  | HuggingFace token for gated dataset access              |
+| `SLACK_WEBHOOK_URL`   | No           | -                  | Slack incoming webhook URL for alerts                   |
+| `SLACK_CHANNEL`       | No           | `#automend-alerts` | Slack channel display name                              |
+| `RAY_NUM_CPUS`        | No           | `4`                | Number of CPUs for Ray workers                          |
+| `RAY_OBJECT_STORE_MB` | No           | `512`              | Ray object store memory in MB                           |
 
 ### Key Configuration Files
 
-| File | Purpose |
-|------|---------|
-| `.env` | Environment variables (API keys, mode, Slack) |
-| `src/config/data_mode.py` | Per-dataset acquisition parameters for each mode |
+| File                       | Purpose                                            |
+| -------------------------- | -------------------------------------------------- |
+| `.env`                     | Environment variables (API keys, mode, Slack)      |
+| `src/config/data_mode.py`  | Per-dataset acquisition parameters for each mode   |
 | `src/config/ray_config.py` | Ray initialization, per-dataset chunk/sample sizes |
-| `src/config/paths.py` | Centralized data directory paths |
-| `docker-compose.yaml` | Service definitions (Airflow, Ray, Postgres) |
+| `src/config/paths.py`      | Centralized data directory paths                   |
+| `docker-compose.yaml`      | Service definitions (Airflow, Ray, Postgres)       |
 
 ---
 
@@ -375,14 +377,14 @@ The function checks local files → tries DVC pull → dispatches to the appropr
 
 Each dataset uses Ray and Polars differently based on its workload:
 
-| Dataset | Ray Pattern | Polars Usage |
-|---------|------------|-------------|
-| DS1 | `@ray.remote` tasks (parallel CSV files) | LazyFrames for transforms |
-| DS2 | Ray Data for distributed normalization | Expressions for log parsing |
-| DS3 | `@ray.remote` tasks (parallel batch processing) | DataFrame for validation |
-| DS4 | Ray Actors + asyncio (concurrent Gemini calls) | - |
-| DS5 | `ray.data.from_huggingface()` | DataFrame for preprocessing |
-| DS6 | `ray.data.read_parquet()` + `.map()` | DataFrame for stats/bias |
+| Dataset | Ray Pattern                                     | Polars Usage                |
+| ------- | ----------------------------------------------- | --------------------------- |
+| DS1     | `@ray.remote` tasks (parallel CSV files)        | LazyFrames for transforms   |
+| DS2     | Ray Data for distributed normalization          | Expressions for log parsing |
+| DS3     | `@ray.remote` tasks (parallel batch processing) | DataFrame for validation    |
+| DS4     | Ray Actors + asyncio (concurrent Gemini calls)  | -                           |
+| DS5     | `ray.data.from_huggingface()`                   | DataFrame for preprocessing |
+| DS6     | `ray.data.read_parquet()` + `.map()`            | DataFrame for stats/bias    |
 
 ### Validation (`src/utils/polars_validation.py`)
 
@@ -410,13 +412,13 @@ report = run_validation_suite(checks)
 
 Validation checks that depend on row counts or dataset size automatically adjust based on `PIPELINE_DATA_MODE`. This ensures pipelines pass in all three modes without manual threshold tweaking.
 
-| Dataset | Validation File | Threshold | `dummy` | `sample` | `full` |
-|---------|----------------|-----------|---------|----------|--------|
-| DS2 | `validate_quality.py` | Expected total rows | 250 | 10,000 | 10,000 |
-| DS2 | `validate_quality.py` | Min sampling % | 1% | 5% | 5% |
-| DS3 | `config.py` | Min rows | 10 | 100 | 100 |
-| DS5 | `schema_validation.py` | Row count range | 10-200 | 3,000-7,000 | 3,000-100,000 |
-| DS5 | `anomaly_detection.py` | Min records | 10 | 3,000 | 3,000 |
+| Dataset | Validation File        | Threshold           | `dummy` | `sample`    | `full`        |
+| ------- | ---------------------- | ------------------- | ------- | ----------- | ------------- |
+| DS2     | `validate_quality.py`  | Expected total rows | 250     | 10,000      | 10,000        |
+| DS2     | `validate_quality.py`  | Min sampling %      | 1%      | 5%          | 5%            |
+| DS3     | `config.py`            | Min rows            | 10      | 100         | 100           |
+| DS5     | `schema_validation.py` | Row count range     | 10-200  | 3,000-7,000 | 3,000-100,000 |
+| DS5     | `anomaly_detection.py` | Min records         | 10      | 3,000       | 3,000         |
 
 DS1, DS4, and DS6 use structural or percentage-based checks that work in all modes without adjustment.
 
@@ -433,12 +435,12 @@ from src.utils.alerting import (
 )
 ```
 
-| Alert Type | Severity | When Triggered |
-|------------|----------|----------------|
-| Pipeline Failure | CRITICAL | Any task fails (via `on_failure_callback`) |
-| Anomaly Detected | WARNING/ERROR | Data anomalies found |
-| Validation Failure | ERROR | Schema validation fails |
-| Bias Detected | WARNING/ERROR | Data bias above threshold |
+| Alert Type         | Severity      | When Triggered                             |
+| ------------------ | ------------- | ------------------------------------------ |
+| Pipeline Failure   | CRITICAL      | Any task fails (via `on_failure_callback`) |
+| Anomaly Detected   | WARNING/ERROR | Data anomalies found                       |
+| Validation Failure | ERROR         | Schema validation fails                    |
+| Bias Detected      | WARNING/ERROR | Data bias above threshold                  |
 
 Alerts are **non-blocking** -- pipelines continue even if Slack delivery fails. All alerts are also logged to `logs/alerts.log` and `logs/alerts_history.json`.
 
@@ -480,13 +482,13 @@ Remove-Item -Recurse -Force data\external\*        # External CSVs (DS3)
 
 Each dataset has dedicated bias detection using Polars for slicing and Fairlearn for metrics:
 
-| Dataset | Slicing Features | Library |
-|---------|-----------------|---------|
-| DS1 (Alibaba) | `status`, `task_type`, `label` | Fairlearn + Polars→pandas bridge |
-| DS2 (LogHub) | `system`, `severity`, `event_type` | Polars |
-| DS3 (StackOverflow) | Tags, answer quality | Polars |
-| DS5 (Glaive) | Complexity tier, turn count, function calls | Polars |
-| DS6 (The Stack) | IaC type, license, file size | Polars |
+| Dataset             | Slicing Features                            | Library                          |
+| ------------------- | ------------------------------------------- | -------------------------------- |
+| DS1 (Alibaba)       | `status`, `task_type`, `label`              | Fairlearn + Polars→pandas bridge |
+| DS2 (LogHub)        | `system`, `severity`, `event_type`          | Polars                           |
+| DS3 (StackOverflow) | Tags, answer quality                        | Polars                           |
+| DS5 (Glaive)        | Complexity tier, turn count, function calls | Polars                           |
+| DS6 (The Stack)     | IaC type, license, file size                | Polars                           |
 
 ---
 
@@ -563,14 +565,14 @@ docker-compose restart            # Restart all services
 
 ## Dataset Licenses
 
-| Dataset | Source | License |
-|---------|--------|---------|
-| DS1: Alibaba Cluster Trace 2017 | [alibaba/clusterdata](https://github.com/alibaba/clusterdata) | Research Use |
-| DS2: LogHub (LogPAI) | [logpai/loghub](https://github.com/logpai/loghub) | CC BY 4.0 |
-| DS3: StackOverflow | [StackOverflow](https://stackoverflow.com/) | CC BY-SA 4.0 |
-| DS4: Synthetic | Generated via Gemini API | N/A |
-| DS5: Glaive Function Calling v2 | [HuggingFace](https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2) | Check HuggingFace |
-| DS6: The Stack | [bigcode/the-stack-dedup](https://huggingface.co/datasets/bigcode/the-stack-dedup) | Permissive (varies) |
+| Dataset                         | Source                                                                             | License             |
+| ------------------------------- | ---------------------------------------------------------------------------------- | ------------------- |
+| DS1: Alibaba Cluster Trace 2017 | [alibaba/clusterdata](https://github.com/alibaba/clusterdata)                      | Research Use        |
+| DS2: LogHub (LogPAI)            | [logpai/loghub](https://github.com/logpai/loghub)                                  | CC BY 4.0           |
+| DS3: StackOverflow              | [StackOverflow](https://stackoverflow.com/)                                        | CC BY-SA 4.0        |
+| DS4: Synthetic                  | Generated via Gemini API                                                           | N/A                 |
+| DS5: Glaive Function Calling v2 | [HuggingFace](https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2) | Check HuggingFace   |
+| DS6: The Stack                  | [bigcode/the-stack-dedup](https://huggingface.co/datasets/bigcode/the-stack-dedup) | Permissive (varies) |
 
 ---
 

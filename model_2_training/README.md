@@ -1,952 +1,290 @@
-# Model 2 Training Pipeline — QLoRA SFT on Qwen2.5
-
-> **Part of AutoMend** — an end-to-end MLOps platform for anomaly detection (Track A) and generative workflow architecture (Track B).
-> This module handles **Track B**: supervised fine-tuning of Qwen2.5-1.5B-Instruct to generate structured JSON workflow responses.
+# AutoMend Track B — Model 2 Training (Phase 2.5 & Phase 2.75)
 
 ---
 
-## Table of Contents
+## Overview
 
-1. [What This Pipeline Does](#1-what-this-pipeline-does)
-2. [Multi-Device Architecture](#2-multi-device-architecture)
-3. [Folder Structure](#3-folder-structure)
-4. [Prerequisites by Platform](#4-prerequisites-by-platform)
-5. [Environment Setup](#5-environment-setup)
-   - [CUDA — Windows / Linux (NVIDIA)](#51-cuda--windows--linux-nvidia)
-   - [MPS — macOS Apple Silicon](#52-mps--macos-apple-silicon)
-   - [CPU — Any platform, no GPU](#53-cpu--any-platform-no-gpu)
-6. [CUDA Blackwell Note (RTX 50xx)](#6-cuda-blackwell-note-rtx-50xx)
-7. [Data Pipeline Dependency](#7-data-pipeline-dependency)
-8. [Running the Pipeline — Step by Step](#8-running-the-pipeline--step-by-step)
-9. [Configuration Reference](#9-configuration-reference)
-10. [Model & LoRA Architecture](#10-model--lora-architecture)
-11. [Training Details by Backend](#11-training-details-by-backend)
-12. [Evaluation Metrics](#12-evaluation-metrics)
-13. [Weights & Biases Tracking](#13-weights--biases-tracking)
-14. [Output Structure](#14-output-structure)
-15. [Sample Results](#15-sample-results)
-16. [Known Issues & Fixes Applied](#16-known-issues--fixes-applied)
-17. [Reproducing the Smoke Test Run (CUDA)](#17-reproducing-the-smoke-test-run-cuda)
-18. [Reproducing on Apple Silicon (MPS)](#18-reproducing-on-apple-silicon-mps)
-19. [Full Training Run](#19-full-training-run)
+This module covers the evaluation infrastructure and hyperparameter optimization for the AutoMend Track B generative pipeline — a fine-tuned Qwen2.5 LoRA agent that generates structured JSON remediation workflows from MLOps incident descriptions.
+
+**Core Innovation**: A locked, stratified gold benchmark combined with a 9-category reference-aware error taxonomy, feeding a W&B Bayesian sweep that automatically identifies the best LoRA configuration — validated through a 4-phase, 54-metric evaluation pipeline.
 
 ---
 
-## 1. What This Pipeline Does
+## Philosophy & Design Principles
 
-AutoMend Track B trains a small generative model to take a user question (with available tools listed as context) and produce a structured JSON response in one of two forms:
+- **Lock the benchmark, never move the goalposts**: Every model is scored on the exact same 30 questions. Rebuilding the benchmark invalidates all historical comparisons.
+- **Know why it failed, not just that it failed**: A system that only says "passed" or "failed" provides no actionable insight. Every wrong output gets a specific, categorized failure label.
+- **Automate the search, don't guess**: Hyperparameter tuning by hand is guesswork. A Bayesian optimizer explores the space intelligently, learning from each trial.
+- **Be honest about what the metrics measure**: The 96.7% score reflects structural correctness — valid JSON with the correct format. Semantic correctness (right tool, right parameters) is the acknowledged next step.
+- **Reference-aware grading**: A model that correctly refuses an invalid request should be marked correct, not penalized for producing empty steps.
+
+---
+
+## Technical Highlights
+
+- **Gold Benchmark**: 30 locked samples from `test.jsonl`, stratified across multi-step, single-step, and refusal archetypes — seed=42, manifest-guarded against accidental rebuilds.
+- **Error Taxonomy**: 9 mutually exclusive failure categories, reference-aware, integrated automatically into every eval and sweep trial.
+- **Evaluation Pipeline**: 4 phases (structural → schema → field → parameter), 54 metrics per run, 6 report artifacts saved per checkpoint.
+- **Bayesian Sweep**: 21 trials across 10 hyperparameters on W&B project `automend-model2`. Best result: **96.7% valid outputs** with LoRA r16, lr=1.19e-4, effective batch=64.
+- **Device-Aware Training**: MLX on Apple Silicon, HuggingFace + PEFT on CUDA/CPU — same pipeline, same metrics, device-agnostic.
+- **Critical Bug Fixes**: Nested `wandb.init()` timeout in MLX subprocess, metric key mismatch breaking the sweep objective, argparse crash from W&B-injected CLI flags.
+
+---
+
+## Key Resources & Repository Navigation
+
+### Entry Points
+1. **[run_benchmark.py](scripts/run_benchmark.py)** → Score any checkpoint against the locked gold benchmark
+2. **[build_benchmark.py](scripts/build_benchmark.py)** → Gold benchmark curation script (run once only)
+3. **[run_sweep.py](scripts/run_sweep.py)** → W&B sweep agent — trains, benchmarks, and logs per trial
+
+### Evaluation Modules
+- **[error_taxonomy.py](src/eval/error_taxonomy.py)** → 9-category failure labeling, reference-aware classification
+- **[metrics_aggregator.py](src/eval/metrics_aggregator.py)** → Unified 4-phase pipeline returning 54 metrics
+- **[evaluator.py](src/eval/evaluator.py)** → Main evaluation orchestrator
+- **[save_reports.py](src/eval/save_reports.py)** → Saves all 6 report artifacts to disk
+
+### Sweep & Model Configuration
+- **[wandb_sweep.yaml](configs/sweep/wandb_sweep.yaml)** → Bayesian sweep — 10 parameters, objective, Hyperband early stopping
+- **[qwen_baseline.yaml](configs/model/qwen_baseline.yaml)** → Qwen2.5-1.5B model config
+- **[qwen_3b_baseline.yaml](configs/model/qwen_3b_baseline.yaml)** → Qwen2.5-3B model config (scale-up)
+- **[qlora_sft.yaml](configs/train/qlora_sft.yaml)** → Training config, updated with winning hyperparameters
+
+### Key Artifacts
+- **Benchmark**: `data/benchmarks/gold_benchmark.jsonl`, `gold_benchmark_manifest.json`
+- **Sweep Results**: `outputs/reports/sweeps/Qwen2.5-1.5B-Instruct_*/metrics.json`
+- **Best Checkpoint**: `outputs/checkpoints/sweeps/Qwen2.5-1.5B-Instruct_4bit_lora-r16_200samples_20260323-0052/`
+- **W&B Dashboard**: `https://wandb.ai/mlops-team-northeastern-university/automend-model2/sweeps/ltilnti3`
+
+---
+
+## Phase 2.5 — Gold Benchmark + Error Taxonomy
+
+### Motivation
+
+Prior to this phase, there was no consistent evaluation baseline. Every run used different questions, making cross-model comparison meaningless. And when a prediction failed, the system produced no diagnostic information — only a binary pass/fail.
+
+---
+
+### Gold Benchmark
+
+30 questions drawn from `test.jsonl`, locked at seed=42 and never rebuilt.
+
+**Stratification — 10 samples per archetype:**
+
+| Archetype | What it tests |
+|-----------|---------------|
+| `multi_step` | Model generates a workflow with 2+ remediation steps |
+| `single_step` | Model generates a workflow with exactly 1 step |
+| `refusal` | Model correctly returns `steps: []` for an invalid request |
+
+A model that scores well on multi-step but fails refusals is not production-ready. Stratification ensures the benchmark covers all output types encountered in a real system.
+
+The manifest records curation metadata and enforces the lock:
 
 ```json
-// Tool call response
 {
-  "workflow": {
-    "steps": [
-      { "tool": "calculate_bmi", "params": { "height": 1.75, "weight": 70 } }
-    ]
-  }
-}
-
-// Refusal / message response
-{
-  "workflow": { "steps": [] },
-  "message": "I'm sorry, I can't assist with that using the available tools."
+  "seed": 42,
+  "total_selected": 30,
+  "archetype_counts": { "multi_step": 10, "refusal": 10, "single_step": 10 },
+  "locked": true,
+  "warning": "DO NOT rebuild without incrementing version. Rebuilding invalidates historical comparisons."
 }
 ```
 
-The pipeline fine-tunes **Qwen2.5-1.5B-Instruct** using **LoRA** on the Track B combined dataset. Only assistant tokens contribute to the loss — system and user tokens are masked to `-100`.
+---
+
+### Error Taxonomy
+
+Every prediction is assigned one of 9 mutually exclusive failure categories, applied in priority order:
+
+| Priority | Category | Condition |
+|----------|----------|-----------|
+| 1 | `VALID` | Non-empty, valid JSON, `workflow.steps` is a non-empty list (or a correct refusal) |
+| 2 | `EMPTY` | Output is empty or whitespace only |
+| 3 | `TRUNCATED` | Opens with `{` or `[` but missing the closing brace — hit the token limit |
+| 4 | `MISSING_WORKFLOW` | Valid JSON but missing the `workflow` or `steps` key |
+| 5 | `WRONG_STEPS_TYPE` | `workflow.steps` exists but is not a list |
+| 6 | `EMPTY_STEPS` | `workflow.steps = []` but the reference expected non-empty steps |
+| 7 | `MALFORMED_JSON` | Non-empty, not truncated, but `json.loads()` fails |
+| 8 | `UNBALANCED_BRACES` | `{`/`}` or `[`/`]` counts do not match |
+| 9 | `UNBALANCED_QUOTES` | Double-quote count is odd |
+
+**Reference-awareness:** `EMPTY_STEPS` is only a failure if the reference itself expected non-empty steps. If the reference is also a refusal, the prediction is labeled `VALID`. Without this, the sweep would penalize models for correctly refusing invalid requests — biasing results toward models that always output steps regardless of the input.
 
 ---
 
-## 2. Multi-Device Architecture
+## Phase 2.75 — Hyperparameter Tuning + Model Scaling
 
-The pipeline detects the compute device at startup via `src/utils/device.py` and routes automatically to the correct backend. You run the **same commands** on every platform.
+### W&B Bayesian Sweep
 
-```
-detect_device()   →   "cuda"  /  "mps"  /  "cpu"
-                            │           │           │
-                     ┌──────┘    ┌──────┘    ┌──────┘
-                     ▼           ▼           ▼
-               HF Backend    MLX Backend  HF Backend
-               (bitsandbytes  (mlx-lm      (fp32,
-                4-bit NF4,    Metal GPU,   no quant,
-                PEFT LoRA,    native quant, very slow)
-                HF Trainer)   mlx_lm.lora)
-```
+A Bayesian optimizer was wired to automatically explore the training hyperparameter space. Each trial trains a full model, benchmarks it on the locked 30 questions, and logs results back to W&B — which then selects the next configuration based on all prior outcomes.
 
-| | CUDA (NVIDIA) | MPS (Apple Silicon) | CPU |
-|---|---|---|---|
-| Platforms | Windows, Linux | macOS M1/M2/M3/M4 | Any |
-| Quantization | 4-bit NF4 via bitsandbytes | Native via mlx-lm Metal | None (fp32) |
-| LoRA framework | PEFT | mlx-lm built-in | PEFT |
-| Training engine | HuggingFace Trainer | `mlx_lm.lora` subprocess | HuggingFace Trainer |
-| Inference engine | HF `model.generate()` | `mlx_lm.generate()` | HF `model.generate()` |
-| Mixed precision | bf16 (Ampere+) or fp16 | Not applicable (Metal) | fp32 |
-| VRAM / RAM needed | ~4 GB (4-bit) | ~6 GB unified RAM (fp32) | ~6 GB system RAM |
+| Setting | Value |
+|---------|-------|
+| Project | `automend-model2` |
+| Sweep ID | `ltilnti3` |
+| Method | Bayesian optimization |
+| Objective | `benchmark/tax_valid_rate` (maximize) |
+| Early stopping | Hyperband (min_iter=1, eta=2) |
+| Trials completed | 21 |
 
-### Why MLX instead of bitsandbytes on Apple Silicon?
+**10 parameters swept:**
 
-`bitsandbytes` implements quantization as **CUDA C++ kernels** — they are compiled for NVIDIA GPUs and cannot run on Apple's Metal GPU. MLX is Apple's own open-source ML framework, purpose-built for M-series chips. It provides:
-
-- Native 4-bit quantization on Metal
-- LoRA fine-tuning via `mlx-lm` (supports Qwen, Llama, Mistral, etc.)
-- Both training **and** inference — no need for a separate framework
-- Full compatibility with HuggingFace model weights (converts on the fly)
-
-> **GGUF note:** GGUF is an inference-only format (llama.cpp, Ollama). It cannot do LoRA training. MLX is the correct choice for training on Apple Silicon.
+| Parameter | Values / Range | What it controls |
+|-----------|---------------|-----------------|
+| `lora_r` | 8, 16, 32, 64 | Model capacity vs truncation risk |
+| `learning_rate` | log-uniform [1e-5, 5e-4] | Update aggressiveness |
+| `lora_alpha` | 16, 32, 64 | LoRA scaling factor |
+| `lora_dropout` | 0.0, 0.05, 0.1 | Regularization |
+| `per_device_train_batch_size` | 1, 2, 4 | Samples per step |
+| `gradient_accumulation_steps` | 4, 8, 16 | Effective batch = batch × accum |
+| `lr_scheduler_type` | cosine, linear, constant_with_warmup | LR decay pattern |
+| `warmup_ratio` | 0.03, 0.05, 0.10 | Warmup fraction |
+| `num_train_epochs` | 1, 2, 3 | Training passes |
+| `weight_decay` | 0.0, 0.01, 0.1 | L2 regularization |
 
 ---
 
-## 3. Folder Structure
+### LoRA Rank Analysis
 
-```
-model_2_training/
-│
-├── configs/
-│   ├── data/track_b_chatml.yaml        # Data: paths, ratios, seq length, sample caps
-│   ├── model/qwen_baseline.yaml        # Model: name, quantization, LoRA targets
-│   ├── train/qlora_sft.yaml            # Training: lr, epochs, batch, LoRA r/alpha
-│   └── eval/json_eval.yaml             # Eval: max_new_tokens, split name
-│
-├── scripts/
-│   ├── run_split.py                    # CLI: create train/val/test splits
-│   ├── run_train.py                    # CLI: run training (auto-detects device)
-│   ├── run_eval.py                     # CLI: evaluate on val set
-│   └── run_test.py                     # CLI: evaluate on held-out test set
-│
-├── src/
-│   ├── utils/
-│   │   ├── device.py                   # ★ Device detection & per-device config
-│   │   ├── config.py                   # YAML loader
-│   │   ├── seed.py                     # Reproducible seeding
-│   │   ├── io.py                       # Atomic file I/O
-│   │   └── paths.py                    # Paths class
-│   │
-│   ├── data/
-│   │   ├── dataset_contract.py         # ChatML schema validation
-│   │   ├── load_jsonl.py               # JSONL loader with malformed-row handling
-│   │   ├── split_data.py               # Train/val/test splitter + stratification
-│   │   ├── dataset_builder.py          # ChatMLSupervisedDataset (torch Dataset)
-│   │   └── collators.py                # AssistantOnlyCollator (loss masking)
-│   │
-│   ├── model/
-│   │   ├── load_tokenizer.py           # Tokenizer loader
-│   │   ├── load_qwen.py                # Qwen loader — CUDA/CPU only (MPS uses MLX)
-│   │   └── lora_factory.py             # PEFT LoRA attachment — CUDA/CPU only
-│   │
-│   ├── train/
-│   │   ├── train_loop.py               # ★ Orchestrator — dispatches to HF or MLX
-│   │   ├── trainer_factory.py          # HF TrainingArguments + Trainer builder
-│   │   ├── mlx_train.py                # ★ MLX backend: data prep + training + inference
-│   │   └── callbacks.py                # Custom Trainer callbacks
-│   │
-│   ├── schemas/
-│   │   └── workflow_schema.py          # Pydantic models for output contract validation (Phase 2A)
-│   │
-│   ├── eval/
-│   │   ├── generator.py                # ★ Device-aware inference (HF or MLX)
-│   │   ├── metrics_json.py             # Phase 1: 9 JSON structural quality metrics
-│   │   ├── metrics_schema.py           # Phase 2A: Pydantic schema validation metrics
-│   │   ├── metrics_fields.py           # Phase 2B: Field-level correctness metrics
-│   │   ├── context_tool_parser.py      # Phase 2C: Extracts tool schemas from system messages
-│   │   ├── metrics_params.py           # Phase 2C: Parameter validation metrics
-│   │   ├── metrics_aggregator.py       # Phase 2D: Runs all phases, returns unified metrics dict
-│   │   ├── save_reports.py             # Save metrics, markdown, sample outputs, param errors
-│   │   └── evaluator.py                # Full eval pipeline orchestrator
-│   │
-│   ├── test/run_testset.py             # Test set eval wrapper
-│   │
-│   └── tracking/
-│       ├── wandb_logger.py             # W&B logging (graceful degradation)
-│       └── artifact_logger.py          # Local run archive
-│
-├── data/splits/
-│   ├── train.jsonl                     # Training split (from run_split.py)
-│   ├── val.jsonl                       # Validation split
-│   ├── test.jsonl                      # Test split
-│   └── split_summary.json
-│
-├── outputs/
-│   ├── checkpoints/
-│   │   ├── best_model/                 # Final checkpoint / adapter
-│   │   ├── checkpoint-N/               # Intermediate checkpoints (CUDA/CPU)
-│   │   ├── mlx_data/                   # MLX-formatted data (MPS only)
-│   │   ├── mlx_lora_config.yaml        # mlx-lm training config (MPS only)
-│   │   └── run_config_snapshot.json    # Full config + detected device
-│   │
-│   └── reports/val/
-│       ├── metrics.json
-│       ├── metrics_summary.md
-│       ├── sample_outputs.json
-│       └── validation_predictions.jsonl
-│
-└── requirements.txt
-```
+| Rank | Trainable Params | Params per Training Sample | Outcome |
+|------|-----------------|---------------------------|---------|
+| r8 | ~21M (1.4%) | 105,000 | Slight underfitting |
+| **r16** | **~42M (2.7%)** | **210,000** | **Best — won the sweep** |
+| r64 | ~168M (10.9%) | 840,000 | Overfits, generates longer outputs, truncates |
 
-Files marked ★ are where device dispatch logic lives.
+r64 exceeded the 512-token generation limit on 2 out of 30 benchmark questions due to longer output generation. r16 provided the best balance between capacity and generalization on 200 training samples.
+
+**Honest caveat**: The difference between r16 (96.7%) and r8 (93.3%) is one prediction out of 30 — within the margin of statistical noise for a 30-sample benchmark. The winning hyperparameter combination was never tested with r8 and could potentially match r16.
 
 ---
 
-## 4. Prerequisites by Platform
+### How Accuracy Is Measured
 
-### CUDA — Windows / Linux (NVIDIA GPU)
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Python | 3.12 | conda env `mlops_project_model` |
-| CUDA toolkit | 12.8 | Required for Blackwell (RTX 50xx) |
-| PyTorch | nightly cu128 | See §6 for Blackwell GPUs |
-| bitsandbytes | ≥ 0.43 | Quantization kernels |
-| PEFT | ≥ 0.10 | LoRA adapter management |
-| HuggingFace Transformers | ≥ 4.40 | Training + inference |
-
-### MPS — macOS Apple Silicon (M1/M2/M3/M4)
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Python | 3.12 | conda env `mlops_project_model` |
-| macOS | 13.5+ | Required for MLX Metal support |
-| PyTorch | ≥ 2.1 | For device detection only (not used for training) |
-| mlx | ≥ 0.16 | Apple's ML framework |
-| mlx-lm | ≥ 0.19 | LLM LoRA training + inference on MLX |
-| HuggingFace Transformers | ≥ 4.40 | Tokenizer loading only |
-
-### CPU — Any platform, no GPU
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Python | 3.12 | |
-| PyTorch | ≥ 2.1 | CPU-only build is fine |
-| HuggingFace Transformers | ≥ 4.40 | |
-
-> CPU training is extremely slow (~100x slower than CUDA). Only use for debugging.
-
----
-
-## 5. Environment Setup
-
-### 5.1 CUDA — Windows / Linux (NVIDIA)
-
-```bash
-# Activate conda env
-conda activate mlops_project_model
-
-# Install all dependencies
-pip install -r requirements.txt
-
-# If you have a Blackwell GPU (RTX 50xx): install PyTorch nightly cu128 FIRST
-# See §6 before running pip install -r requirements.txt
-```
-
-**HuggingFace login** (needed to download Qwen):
-```bash
-huggingface-cli login
-# Paste your HF token when prompted
-```
-
-**W&B setup** — copy `.env.example` to `.env` and fill in your credentials:
-```bash
-cp AutoMend/.env.example AutoMend/.env
-# Then edit .env and set:
-#   WANDB_API_KEY=your_wandb_api_key_here   ← from wandb.ai/settings
-#   WANDB_PROJECT=automend-model2
-#   WANDB_ENTITY=your_wandb_username_or_team
-```
-
-`run_train.py` loads `.env` automatically — no manual `wandb login` needed.
-
----
-
-### 5.2 MPS — macOS Apple Silicon
-
-```bash
-# Activate conda env
-conda activate mlops_project_model
-
-# Install base dependencies (torch for device detection, HF for tokenizer)
-pip install torch transformers accelerate pyyaml loguru wandb numpy pytest
-
-# Install the MLX backend
-pip install mlx mlx-lm
-
-# Verify MLX sees your GPU
-python -c "import mlx.core as mx; print(mx.default_device())"
-# Expected: Device(gpu, 0)
-```
-
-**HuggingFace login** (same as CUDA):
-```bash
-huggingface-cli login
-```
-
-> You do **not** need `bitsandbytes`, `peft`, or `trl` on Apple Silicon.
-> The MLX backend handles quantization and LoRA natively.
-
----
-
-### 5.3 CPU — Any platform, no GPU
-
-```bash
-conda activate mlops_project_model
-pip install torch transformers accelerate peft pyyaml loguru wandb numpy pytest
-```
-
-> Skip `bitsandbytes` — quantization is not available on CPU.
-
----
-
-## 6. CUDA Blackwell Note (RTX 50xx)
-
-> Skip this section if you don't have an RTX 5070 / 5080 / 5090.
-
-Blackwell GPUs use compute capability **sm_120** which is not supported by the stable PyTorch release (cu126 or earlier). You will get:
-
-```
-CUDA error: no kernel image is available for execution on the device
-```
-
-**Fix — install PyTorch nightly cu128 before anything else:**
-
-```bash
-pip install --pre torch torchvision torchaudio \
-  --index-url https://download.pytorch.org/whl/nightly/cu128
-
-# Then install bitsandbytes
-pip install bitsandbytes --upgrade
-
-# Then install the rest
-pip install transformers peft trl accelerate pyyaml loguru wandb numpy pytest
-```
-
-**Verify:**
-```bash
-python -c "import torch; print(torch.cuda.get_device_name(0)); print(torch.cuda.is_available())"
-# Expected: NVIDIA GeForce RTX 5070 Laptop GPU
-#           True
-```
-
----
-
-## 7. Data Pipeline Dependency
-
-This module consumes the output of the AutoMend data pipeline:
-
-```
-AutoMend/data/processed/track_B_combined.jsonl   ← required input
-```
-
-This file is produced by the combiner step (ds3 + ds4 + ds5 + ds6 → 5,118 samples).
-
-**Sample format:**
-```json
-{
-  "messages": [
-    { "role": "system",    "content": "You are a helpful assistant. Available tools: ..." },
-    { "role": "user",      "content": "Calculate my BMI. I weigh 70kg and am 1.75m tall." },
-    { "role": "assistant", "content": "{\"workflow\": {\"steps\": [...]}}" }
-  ],
-  "metadata": { "source_dataset": "ds5", "task_type": "tool_call" }
-}
-```
-
-If the artifact is missing, regenerate it from the AutoMend root:
-```bash
-python -c "from src.combiner_track_b.combine import combine_track_b; combine_track_b()"
-```
-
----
-
-## 8. Running the Pipeline — Step by Step
-
-> All commands run from the **`model_2_training/`** directory with `mlops_project_model` active.
-> The **same commands work on all platforms** — device detection is automatic.
-
-### Step 1 — Create Splits
-
-```bash
-python scripts/run_split.py --config configs/data/track_b_chatml.yaml
-```
-
-Creates `data/splits/train.jsonl`, `val.jsonl`, `test.jsonl` and a summary JSON.
-
-On **MPS**, this step also indirectly prepares the raw splits that `mlx_train.py` will convert to MLX chat format during training.
-
-**Expected output (full dataset):**
-```
-Split result — train: 4094, val: 511, test: 513 (total: 5118)
-```
-
-**For a quick smoke test**, set caps in `configs/data/track_b_chatml.yaml`:
-```yaml
-max_train_samples: 200
-max_val_samples:    50
-max_test_samples:   50
-```
-
----
-
-### Step 2 — Train
-
-```bash
-python scripts/run_train.py \
-  --data-config  configs/data/track_b_chatml.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --train-config configs/train/qlora_sft.yaml
-```
-
-**What happens automatically by device:**
-
-| Step | CUDA | MPS | CPU |
-|------|------|-----|-----|
-| Seed | ✓ | ✓ | ✓ |
-| Config snapshot | ✓ (includes `"device": "cuda"`) | ✓ (includes `"device": "mps"`) | ✓ |
-| Tokenizer | HF `AutoTokenizer` | HF `AutoTokenizer` | HF `AutoTokenizer` |
-| Data prep | `ChatMLSupervisedDataset` | MLX chat JSONL conversion | `ChatMLSupervisedDataset` |
-| Model load | Qwen + 4-bit NF4 | mlx-lm loads base model | Qwen fp32 |
-| LoRA attach | PEFT (`peft.get_peft_model`) | mlx-lm built-in | PEFT |
-| Training | HuggingFace Trainer | `mlx_lm.lora` subprocess | HuggingFace Trainer |
-| Precision | bf16 (Ampere+) / fp16 | Metal (handled by MLX) | fp32 |
-| Adapter saved | `best_model/` PEFT format | `best_model/` MLX format | `best_model/` PEFT format |
-
-**CLI overrides (all platforms):**
-```bash
-python scripts/run_train.py \
-  --data-config  configs/data/track_b_chatml.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --train-config configs/train/qlora_sft.yaml \
-  --epochs 3 \
-  --lr 2e-4 \
-  --batch-size 2
-```
-
----
-
-### Step 3 — Evaluate (Validation Set)
-
-```bash
-python scripts/run_eval.py \
-  --config     configs/eval/json_eval.yaml \
-  --checkpoint outputs/checkpoints/best_model
-```
-
-Auto-detects CUDA/MPS/CPU and uses the appropriate inference backend.
-
-Saves to `outputs/reports/val/`:
-- `metrics.json` — all Phase 1–2C metrics as a flat dict
-- `metrics_summary.md` — human-readable per-phase tables
-- `sample_outputs.json` — generated vs. reference pairs
-- `error_samples.json` — samples where JSON parse failed (Phase 1)
-- `param_errors.json` — steps that failed parameter validation (Phase 2C)
-- `validation_predictions.jsonl` — full prediction log
-
----
-
-### Step 4 — Test Set Evaluation (Final / Hold-Out)
-
-```bash
-python scripts/run_test.py \
-  --config     configs/eval/json_eval.yaml \
-  --checkpoint outputs/checkpoints/best_model
-```
-
-> Run only once, after all hyperparameter decisions are final. Do not use test results to guide tuning.
-
----
-
-## 9. Configuration Reference
-
-### `configs/data/track_b_chatml.yaml`
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `artifact_path` | `data/processed/track_B_combined.jsonl` | Raw artifact (relative to AutoMend root) |
-| `splits_dir` | `data/splits` | Split output dir (relative to `model_2_training/`) |
-| `train_ratio` | `0.80` | Training fraction |
-| `val_ratio` | `0.10` | Validation fraction |
-| `test_ratio` | `0.10` | Test fraction |
-| `shuffle_seed` | `42` | Reproducibility seed |
-| `max_seq_length` | `2048` | Token length cap |
-| `malformed_row_strategy` | `"skip"` | `"skip"` or `"raise"` |
-| `stratify_by` | `[source_dataset]` | Stratify splits by this metadata field |
-| `max_train_samples` | `null` | Cap training samples (`200` for smoke tests) |
-| `max_val_samples` | `null` | Cap val samples (`50` for smoke tests) |
-| `max_test_samples` | `null` | Cap test samples (`50` for smoke tests) |
-
-### `configs/model/qwen_baseline.yaml`
-
-| Key | Value | Description |
-|-----|-------|-------------|
-| `model_name` | `Qwen/Qwen2.5-1.5B-Instruct` | HuggingFace model ID |
-| `tokenizer_name` | `Qwen/Qwen2.5-1.5B-Instruct` | Tokenizer (usually same as model) |
-| `quantization` | `"4bit"` | CUDA: `"4bit"` / `"8bit"` / `null`. MPS: ignored (MLX handles it). CPU: ignored. |
-| `device_map` | `"auto"` | CUDA: used as-is. MPS/CPU: overridden by device.py |
-| `lora_target_modules` | 7 projection layers | CUDA/CPU only — MLX targets layers by count |
-
-### `configs/train/qlora_sft.yaml`
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `num_train_epochs` | `3` | Full training; `1` for smoke test |
-| `per_device_train_batch_size` | `2` | Reduce to `1` if OOM |
-| `gradient_accumulation_steps` | `8` | Effective batch = 2 × 8 = 16. Set to `1` for smoke tests (same step count as MLX). |
-| `learning_rate` | `2e-4` | Initial LR (cosine decay) |
-| `warmup_ratio` | `0.05` | 5% warmup steps |
-| `lr_scheduler_type` | `"cosine"` | Cosine annealing |
-| `bf16` | `true` | Overridden by device.py (ignored on CPU/MPS) |
-| `lora_r` | `16` | LoRA rank — used by both CUDA (PEFT) and MPS (mlx-lm) |
-| `lora_alpha` | `32` | LoRA scaling — used by both backends |
-| `lora_dropout` | `0.05` | Dropout on LoRA layers |
-| `report_to` | `"wandb"` | Set to `"none"` to disable W&B |
-| `eval_steps` | `100` | Evaluate every N steps (CUDA/CPU) |
-| `save_steps` | `100` | Save checkpoint every N steps (CUDA/CPU) |
-
----
-
-## 10. Model & LoRA Architecture
-
-### Base Model
-
-| Property | Value |
-|----------|-------|
-| Model | Qwen2.5-1.5B-Instruct |
-| Total parameters | ~907M |
-| Context window | 32,768 tokens (capped at 2,048 during training) |
-| HuggingFace ID | `Qwen/Qwen2.5-1.5B-Instruct` |
-
-### LoRA Configuration
-
-| Property | CUDA / CPU (PEFT) | MPS (mlx-lm) |
-|----------|-------------------|--------------|
-| Rank (r) | 16 | 16 |
-| Alpha (α) | 32 | 32 |
-| Dropout | 0.05 | 0.05 |
-| Layers trained | Last 16 of 28 (layers 12–27) | Last 16 of 28 |
-| Target modules | `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj` | All projection layers in trained layers |
-| Trainable params | ~10.5M (~1.17% of 899M) | ~10.5M (approx.) |
-
-### Loss Masking (CUDA / CPU only)
-
-`AssistantOnlyCollator` scans each tokenized sequence for assistant spans and sets `labels = -100` for all system and user tokens. Only assistant response tokens contribute to cross-entropy loss.
-
-On MPS, `mlx_lm.lora` handles loss masking internally using the chat format.
-
----
-
-## 11. Training Details by Backend
-
-### CUDA / CPU — HuggingFace Trainer
-
-1. Tokenize with `apply_chat_template()`, truncate/pad to 2048
-2. `AssistantOnlyCollator` masks non-assistant tokens to -100
-3. AdamW + cosine LR schedule + 5% warmup
-4. bitsandbytes 4-bit NF4 quantization (CUDA only)
-5. Best checkpoint restored by eval_loss at end of training
-
-**Smoke test results (200 samples, 1 epoch, CUDA RTX 5070):**
-
-| Step | Loss | LR |
-|------|------|----|
-| 10 | 0.578 | 1.58e-4 |
-| 20 | 0.428 | 3.17e-5 |
-
-Loss dropped 26% over 25 steps — model is learning the JSON schema.
-
-### MPS — mlx-lm
-
-1. `prepare_mlx_data()` copies splits to `outputs/checkpoints/mlx_data/` in MLX chat format
-2. `build_mlx_lora_config()` writes a YAML config for `mlx_lm.lora`
-3. `python -m mlx_lm lora --config mlx_lora_config.yaml` runs on Metal GPU
-4. Adapter saved to `outputs/checkpoints/best_model/` in MLX format
-5. Validation loss reported every `eval_steps` iterations
-
-**mlx-lm iteration calculation:**
-```
-iters = ceil(n_samples / batch_size) × num_epochs
-e.g.: ceil(200 / 2) × 1 = 100 iters for smoke test
-```
-
----
-
-## 12. Evaluation Metrics
-
-Evaluation runs four phases automatically. All metrics are written to `outputs/reports/val/metrics.json` with phase-namespaced keys.
-
-### Phase 1 — JSON Structural Quality (9 metrics)
-
-| Metric | Smoke Test (50 val, CUDA) | Interpretation |
-|--------|---------------------------|----------------|
-| Non-empty output rate | **100%** | Model always produces output |
-| Starts with `{` or `[` | **100%** | JSON structure always initiated |
-| Ends with `}` or `]` | **98%** | 1 sample slightly truncated |
-| JSON parse success rate | **96%** | 48/50 outputs are valid JSON |
-| Malformed JSON rate | 4% | 2 samples: unclosed strings |
-| Truncation rate | 2% | 1 sample hit the max token limit |
-| Quote balance rate | **98%** | Strings properly closed |
-| Brace balance rate | **94%** | Nested braces mostly balanced |
-| Average output length | 392 chars | Not too terse, not runaway |
-
-### Phase 2A — Pydantic Schema Validation
-
-| Metric | Smoke Test | Description |
-|--------|------------|-------------|
-| `schema_valid_rate` | **94%** | Passes full Pydantic output contract |
-| `correct_shape_rate` | **90%** | Generated shape (tool/message) matches reference |
-| `extra_fields_rate` | 0% | No unexpected extra keys |
-| `wrong_type_rate` | 0% | No wrong field types |
-
-### Phase 2B — Field-Level Correctness
-
-| Metric | Smoke Test | Denominator |
-|--------|------------|-------------|
-| `tool_name_nonempty_rate` | **100%** | 57 steps |
-| `params_nonempty_rate` | **93%** | 57 steps |
-| `steps_count_match_rate` | **87.5%** | 48 parseable pairs |
-| `message_nonempty_rate` | **100%** | 18 message responses |
-| `steps_is_list_rate` | **100%** | 48 parseable |
-
-### Phase 2C — Parameter Validation
-
-| Metric | Smoke Test | Description |
-|--------|------------|-------------|
-| `param_schema_coverage_rate` | **89.5%** | Steps with an extractable tool schema |
-| `param_completeness_rate` | **100%** | All required params present |
-| `param_no_extras_rate` | **100%** | No unexpected params |
-| `full_param_validity_rate` | **100%** | All available checks passed |
-
-**Main failure mode with 200 samples:** over-calling (generates 2 tool steps when 1 is needed). Resolves significantly with full dataset training.
-
----
-
-## 13. Weights & Biases Tracking
-
-W&B is integrated for CUDA and CPU runs. Each run is auto-named:
-
-```
-{model_short}_{quant}_lora-r{r}_{n_samples}samples_{datetime}
-# CUDA example: Qwen2.5-1.5B-Instruct_4bit_lora-r16_200samples_20260319-2008
-# MPS example:  Qwen2.5-1.5B-Instruct_mlx_lora-r16_200samples_20260319-2008
-# CPU example:  Qwen2.5-1.5B-Instruct_fp32_lora-r16_200samples_20260319-2008
-```
-
-### Setup
-
-```bash
-# Set credentials in AutoMend/.env (copied from .env.example):
-WANDB_API_KEY=your_wandb_api_key_here   # from wandb.ai/settings
-WANDB_PROJECT=automend-model2
-WANDB_ENTITY=your_wandb_username_or_team
-```
-
-`run_train.py`, `run_eval.py`, and `run_test.py` all call `load_dotenv()` at startup — credentials are picked up automatically on every run, no `wandb login` required.
-
-### MPS / MLX W&B
-
-W&B is fully integrated for MPS runs. `mlx_train.py` reads `WANDB_PROJECT` and `WANDB_RUN_NAME` from the environment and injects `report_to: wandb` into the `mlx_lm.lora` YAML config automatically. No extra steps needed — just set the credentials in `.env`.
-
-### Disable W&B
-
-```yaml
-# configs/train/qlora_sft.yaml
-report_to: "none"
-```
-
----
-
-## 14. Output Structure
-
-```
-outputs/
-├── checkpoints/
-│   ├── best_model/                          # Final adapter (PEFT or MLX format)
-│   │   ├── adapter_config.json              # LoRA config
-│   │   ├── adapter_model.safetensors        # PEFT adapter weights (CUDA/CPU)
-│   │   │   — OR —
-│   │   ├── adapters.npz                     # MLX adapter weights (MPS)
-│   │   ├── tokenizer.json
-│   │   ├── tokenizer_config.json
-│   │   └── chat_template.jinja
-│   │
-│   ├── checkpoint-N/                        # Intermediate checkpoints (CUDA/CPU)
-│   ├── mlx_data/                            # MLX-formatted JSONL data (MPS only)
-│   │   ├── train.jsonl
-│   │   ├── valid.jsonl
-│   │   └── test.jsonl
-│   ├── mlx_lora_config.yaml                 # mlx-lm training config (MPS only)
-│   └── run_config_snapshot.json             # All configs + detected device
-│
-└── reports/val/
-    ├── metrics.json                         # All Phase 1–2C metrics (flat dict)
-    ├── metrics_summary.md                   # Human-readable per-phase tables
-    ├── sample_outputs.json                  # Generated vs. reference pairs
-    ├── error_samples.json                   # JSON parse failures (Phase 1)
-    ├── param_errors.json                    # Parameter validation failures (Phase 2C)
-    └── validation_predictions.jsonl         # Full prediction log
-```
-
-### Loading the trained adapter for inference
-
-**CUDA / CPU (PEFT):**
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
-
-base = AutoModelForCausalLM.from_pretrained(
-    "Qwen/Qwen2.5-1.5B-Instruct", torch_dtype="auto", device_map="auto"
-)
-model = PeftModel.from_pretrained(base, "outputs/checkpoints/best_model")
-tokenizer = AutoTokenizer.from_pretrained("outputs/checkpoints/best_model")
-```
-
-**MPS (MLX):**
-```python
-from mlx_lm import load, generate
-
-model, tokenizer = load(
-    "Qwen/Qwen2.5-1.5B-Instruct",
-    adapter_path="outputs/checkpoints/best_model"
-)
-response = generate(model, tokenizer, prompt="...", max_tokens=512)
-```
-
----
-
-## 15. Sample Results
-
-### Exact match — multi-step tool call (index 21)
-
-| | Content |
-|--|---------|
-| **Generated** | `{"workflow": {"steps": [{"tool": "get_stock_price", "params": {"symbol": "AAPL"}}, {"tool": "get_stock_price", "params": {"symbol": "MSFT"}}]}}` |
-| **Reference** | *(identical)* |
-| **Result** | ✅ Exact match |
-
-### Correct refusal (index 1)
-
-| | Content |
-|--|---------|
-| **Generated** | `{"workflow": {"steps": []}, "message": "I'm sorry, but I can't assist with that. My current capabilities allow me to translate words and phrases between languages."}` |
-| **Reference** | `{"workflow": {"steps": []}, "message": "I'm sorry, but I'm unable to perform external tasks like ordering a pizza..."}` |
-| **Result** | ✅ Semantically correct (different wording, same intent and structure) |
-
-### Over-calling (index 7) — main failure mode with 200 training samples
-
-| | Steps |
-|--|-------|
-| **Generated** | 2 calls: `calculate_tip(50, 15%)` and `calculate_tip(75, 20%)` |
-| **Reference** | 1 call: `calculate_tip(50, 15%)` |
-| **Result** | ⚠️ Extra tool call — resolves with full dataset training |
-
----
-
-## 16. Known Issues & Fixes Applied
-
-### 1. Blackwell GPU — CUDA kernel error
-
-**Error:** `CUDA error: no kernel image is available for execution on the device`
-**Cause:** Stable PyTorch (cu126) has no kernels for sm_120 (RTX 5070/5080/5090).
-**Fix:** Install PyTorch nightly cu128. See §6.
-
-### 2. Transformers 5.x — `evaluation_strategy` renamed
-
-**Error:** `TypeError: TrainingArguments.__init__() got unexpected keyword argument 'evaluation_strategy'`
-**Fix:** `trainer_factory.py` uses `eval_strategy=` (the new name). The YAML key remains `evaluation_strategy` — the factory maps it.
-
-### 3. Transformers 5.x — `tokenizer` renamed in Trainer
-
-**Error:** `TypeError: Trainer.__init__() got unexpected keyword argument 'tokenizer'`
-**Fix:** `trainer_factory.py` passes `processing_class=tokenizer` (the new name).
-
-### 4. W&B not connecting
-
-**Symptom:** W&B prompts for login or run doesn't appear on wandb.ai.
-**Fix:** Make sure `AutoMend/.env` exists (copied from `.env.example`) and has `WANDB_API_KEY` set.
-`run_train.py` loads it automatically via `python-dotenv`. If the file is missing, W&B falls back to prompting for login.
-
-### 5. bitsandbytes on MPS / CPU
-
-**Error:** `CUDA not found` or similar when trying to use BnB on non-CUDA devices.
-**Fix:** `device.py` + `load_qwen.py` detect MPS/CPU and skip quantization entirely. MPS routes to the MLX backend; CPU loads in fp32.
-
----
-
-## 17. Reproducing the Smoke Test Run (CUDA)
-
-Exact reproduction of the 2026-03-19 run: 200 train / 50 val / 50 test, 1 epoch, RTX 5070.
-
-**Step 1 — Verify CUDA environment:**
-```bash
-conda activate mlops_project_model
-python -c "import torch; print(torch.__version__); print(torch.cuda.get_device_name(0))"
-# Expected: 2.x.x+cu128  |  NVIDIA GeForce RTX 5070 Laptop GPU
-```
-
-**Step 2 — Set smoke test caps** in `configs/data/track_b_chatml.yaml`:
-```yaml
-max_train_samples: 200
-max_val_samples:    50
-max_test_samples:   50
-```
-
-And in `configs/train/qlora_sft.yaml`:
-```yaml
-num_train_epochs: 1
-per_device_train_batch_size: 1
-```
-
-**Step 3 — Verify the artifact:**
-```bash
-wc -l ../data/processed/track_B_combined.jsonl
-# Expected: 5118
-```
-
-**Step 4 — Run:**
-```bash
-python scripts/run_split.py --config configs/data/track_b_chatml.yaml
-
-python scripts/run_train.py \
-  --data-config  configs/data/track_b_chatml.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --train-config configs/train/qlora_sft.yaml
-
-python scripts/run_eval.py \
-  --config     configs/eval/json_eval.yaml \
-  --checkpoint outputs/checkpoints/best_model
-```
-
-**Expected results:**
-- Step 10 loss: ~0.578, Step 20 loss: ~0.428
-- JSON parse rate: ~96%, Non-empty rate: 100%
-- Training time: ~5 minutes
-
----
-
-## 18. Reproducing on Apple Silicon (MPS)
-
-```bash
-# 1. Verify environment
-conda activate mlops_project_model
-python -c "import mlx.core as mx; print(mx.default_device())"
-# Expected: Device(gpu, 0)
-
-# 2. Verify PyTorch sees MPS
-python -c "import torch; print(torch.backends.mps.is_available())"
-# Expected: True
-
-# 3. Set smoke test caps (same as §17 Step 2)
-
-# 4. Run — exact same commands as CUDA
-python scripts/run_split.py --config configs/data/track_b_chatml.yaml
-
-python scripts/run_train.py \
-  --data-config  configs/data/track_b_chatml.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --train-config configs/train/qlora_sft.yaml
-
-python scripts/run_eval.py \
-  --config     configs/eval/json_eval.yaml \
-  --checkpoint outputs/checkpoints/best_model
-```
-
-**What happens differently on MPS:**
-- `device.py` returns `"mps"` → `train_loop.py` routes to `_run_mlx_training()`
-- Data is converted to MLX chat format in `outputs/checkpoints/mlx_data/`
-- `mlx_lora_config.yaml` is written and `python -m mlx_lm lora` is invoked
-- Adapter is saved in MLX format to `best_model/`
-- Eval inference uses `mlx_lm.load()` + `mlx_lm.generate()` instead of HF
-
-**Memory:** 1.5B model in fp32 ≈ 6 GB unified memory — works on M1 16 GB and up.
-
----
-
-## 19. Full Training Run
-
-Set all caps to `null` and use 3 epochs for production-quality results.
-
-**`configs/data/track_b_chatml.yaml`:**
-```yaml
-max_train_samples: null
-max_val_samples:   null
-max_test_samples:  null
-```
-
-**`configs/train/qlora_sft.yaml`:**
-```yaml
-num_train_epochs: 3
-per_device_train_batch_size: 2
-```
-
-```bash
-python scripts/run_split.py --config configs/data/track_b_chatml.yaml
-
-python scripts/run_train.py \
-  --data-config  configs/data/track_b_chatml.yaml \
-  --model-config configs/model/qwen_baseline.yaml \
-  --train-config configs/train/qlora_sft.yaml \
-  --epochs 3
-
-python scripts/run_eval.py \
-  --config     configs/eval/json_eval.yaml \
-  --checkpoint outputs/checkpoints/best_model
-
-# Final test evaluation — run only once
-python scripts/run_test.py \
-  --config     configs/eval/json_eval.yaml \
-  --checkpoint outputs/checkpoints/best_model
-```
-
-**Expected improvements over smoke test:**
-- Over-calling significantly reduced (more single-step training examples seen)
-- Tool name accuracy improves
-- JSON parse rate > 98%
-- Better parameter completeness in tool calls
-
----
-
-## Appendix A — Data Contract
-
-Each sample in `track_B_combined.jsonl` must satisfy:
+Accuracy is derived from post-training code-based validation — not from training loss. After training, all 30 benchmark questions are fed to the model and each output is validated programmatically:
 
 ```python
-{
-  "messages": [                          # Required: list of message dicts
-    { "role": "system",    "content": "..." },   # Required
-    { "role": "user",      "content": "..." },   # Required
-    { "role": "assistant", "content": "..." }    # Must end with assistant
-  ],
-  "metadata": {                          # Optional: source info
-    "source_dataset": "ds5",
-    "task_type": "tool_call"
-  }
-}
+json.loads(generated_text)                          # valid JSON?
+parsed.get("workflow", {}).get("steps")             # correct structure?
+isinstance(steps, list) and len(steps) > 0          # non-empty list?
+# 29 / 30 passing = 96.7%
 ```
 
-Samples failing this contract are handled by `malformed_row_strategy`:
-- `"skip"` (default): logged and dropped silently
-- `"raise"`: raises `ContractViolation` immediately
+This is **structural validation**. It confirms the model learned correct JSON format. It does not confirm semantic correctness — whether the model selected the right tool or the right parameter values. That is the next evaluation layer to build.
 
 ---
 
-## Appendix B — Switching to Llama Models
+### Train Loss vs Validation Loss
 
-When moving from Qwen2.5 to Llama models in future iterations, only the model config needs to change:
+Training loss measures token-level prediction error during training and almost always decreases. Validation loss measures generalization on held-out data and is the meaningful signal.
 
-```yaml
-# configs/model/qwen_baseline.yaml  →  configs/model/llama_baseline.yaml
-model_name:      "meta-llama/Llama-3.1-8B-Instruct"
-tokenizer_name:  "meta-llama/Llama-3.1-8B-Instruct"
-quantization:    "4bit"   # CUDA: bitsandbytes | MPS: mlx-lm native
-lora_target_modules:
-  - "q_proj"
-  - "k_proj"
-  - "v_proj"
-  - "o_proj"
-  - "gate_proj"
-  - "up_proj"
-  - "down_proj"
+From the r64 run:
+
+```
+Iter 100:  Val loss 0.732   Train loss 0.418   ← lowest val loss
+Iter 200:  Val loss 0.740   Train loss 0.206   ← val plateaus
+Iter 300:  Val loss 0.872   Train loss 0.090   ← val rising, train still falling
 ```
 
-Both backends (CUDA bitsandbytes and MPS mlx-lm) support Llama 3 natively. No code changes needed.
+The model was overfitting by iter 200 on 200 training samples. MLX saves the final adapter (iter 300), not the best val loss checkpoint (iter 100) — meaning benchmarked models are evaluated at a slightly suboptimal point.
 
 ---
 
-*AutoMend — Model 2 Training Pipeline*
-*Backends: HuggingFace Transformers + PEFT (CUDA/CPU) · MLX + mlx-lm (Apple Silicon)*
+### Model Scaling — 1.5B vs 3B
+
+After identifying the best hyperparameters for the 1.5B model, the same configuration was applied to Qwen2.5-3B to determine whether larger capacity improves benchmark performance.
+
+| | 1.5B (sweep winner) | 3B |
+|--|---|---|
+| Model | `Qwen/Qwen2.5-1.5B-Instruct` | `Qwen/Qwen2.5-3B-Instruct` |
+| Parameters | ~1.55B | ~3.1B |
+| Benchmark score | **96.7%** | Training in progress |
+| RAM (MPS) | ~8 GB | ~12 GB |
+
+The higher-scoring model becomes the **best non-RAG checkpoint** — the strongest version before any retrieval augmentation is added.
+
+---
+
+## What the Metrics Are Actually Measuring
+
+| Metric | Industry Standard (BFCL) | This Implementation |
+|--------|--------------------------|---------------------|
+| Valid JSON output rate | Core | Measured |
+| Schema validity | Core | Measured |
+| Tool name accuracy | Critical | Not yet built |
+| Parameter value match | Critical | Not yet built |
+| End-to-end exact match | Standard | Not yet built |
+
+The current 96.7% reflects structural output quality. Semantic evaluation — tool selection accuracy and parameter correctness — is the next phase.
+
+---
+
+## Results
+
+### All Sweep Trials
+
+| Rank | Model | Valid Output | Schema OK | Steps Match |
+|------|-------|-------------|-----------|-------------|
+| 1 | lora-r16 (0052) | **96.7%** | 96.7% | 75.9% |
+| 2 | lora-r8 (0037) | 93.3% | 96.7% | 69.0% |
+| 3 | lora-r8 (1122) | 93.3% | 93.3% | 67.9% |
+| 4 | lora-r64 (0058) | 93.3% | 93.3% | 64.3% |
+| 5 | lora-r16 (0026) | 86.7% | 90.0% | 70.4% |
+
+### Winning Hyperparameters
+
+| Parameter | Default | Winner | Why it helped |
+|-----------|---------|--------|---------------|
+| `lora_r` | 16 | **16** | Sweet spot — r8 underfits, r64 truncates |
+| `learning_rate` | 2e-4 | **1.19e-4** | Conservative updates — stable structure learning |
+| `per_device_train_batch_size` | 2 | **4** | More samples per update |
+| `gradient_accumulation_steps` | 1 | **16** | Effective batch of 64 — 32× larger than default |
+| `lr_scheduler_type` | cosine | **constant_with_warmup** | Stable LR after warmup |
+| `weight_decay` | 0.01 | **0.1** | Stronger regularization, better generalization |
+
+> **Right rank (r16) + Large effective batch (64) + Conservative learning rate (1.19e-4)**
+
+---
+
+## Commands
+
+**Build the gold benchmark** (run once only):
+```bash
+python scripts/build_benchmark.py
+```
+
+**Score a checkpoint on the gold benchmark:**
+```bash
+python scripts/run_benchmark.py \
+    --config     configs/eval/json_eval.yaml \
+    --checkpoint outputs/checkpoints/best_model
+```
+
+**Initialize the W&B sweep:**
+```bash
+wandb sweep configs/sweep/wandb_sweep.yaml
+```
+
+**Launch the sweep agent:**
+```bash
+wandb agent mlops-team-northeastern-university/automend-model2/ltilnti3 --count 5
+```
+
+**Train the 3B model:**
+```bash
+python scripts/run_train.py \
+    --data-config  configs/data/track_b_chatml.yaml \
+    --model-config configs/model/qwen_3b_baseline.yaml \
+    --train-config configs/train/qlora_sft.yaml
+```
+
+**Rank all sweep trials by benchmark score:**
+```bash
+for dir in outputs/reports/sweeps/Qwen2.5-1.5B-Instruct_*/; do
+    rate=$(python3 -c "import json; d=json.load(open('$dir/metrics.json')); print(d.get('phase1_structural/tax_valid_rate','N/A'))")
+    echo "$rate  $(basename $dir)"
+done | sort -rn
+```
+
+---

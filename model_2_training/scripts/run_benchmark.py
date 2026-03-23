@@ -105,11 +105,13 @@ def main() -> None:
     )
 
     logger.success("Gold benchmark evaluation complete.")
-    logger.info(f"  json_parse_rate    : {metrics.get('json_parse_rate', 'N/A')}")
-    logger.info(f"  non_empty_rate     : {metrics.get('non_empty_rate', 'N/A')}")
-    logger.info(f"  tax_valid_rate     : {metrics.get('tax_valid_rate', 'N/A')}")
-    logger.info(f"  tax_truncated_rate : {metrics.get('tax_truncated_rate', 'N/A')}")
-    logger.info(f"  tax_empty_rate     : {metrics.get('tax_empty_rate', 'N/A')}")
+    logger.info(f"  json_parse_rate    : {metrics.get('phase1_structural/json_parse_rate', 'N/A')}")
+    logger.info(f"  non_empty_rate     : {metrics.get('phase1_structural/non_empty_rate', 'N/A')}")
+    logger.info(f"  tax_valid_rate     : {metrics.get('phase1_structural/tax_valid_rate', 'N/A')}")
+    logger.info(f"  tax_truncated_rate : {metrics.get('phase1_structural/tax_truncated_rate', 'N/A')}")
+    logger.info(f"  tax_empty_rate     : {metrics.get('phase1_structural/tax_empty_rate', 'N/A')}")
+    logger.info(f"  schema_valid_rate  : {metrics.get('phase2a_schema/schema_valid_rate', 'N/A')}")
+    logger.info(f"  full_param_valid   : {metrics.get('phase2c_params/full_param_validity_rate', 'N/A')}")
     logger.info(f"  Reports saved in   : {output_dir}")
 
 
