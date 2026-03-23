@@ -32,6 +32,7 @@ _AUTOMEND_ROOT = _M2_ROOT.parent
 sys.path.insert(0, str(_AUTOMEND_ROOT))
 
 from model_2_training.src.test.run_testset import run_test_evaluation
+from model_2_training.src.tracking.wandb_logger import init_run, log_eval_metrics, finish_run
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +67,8 @@ def main() -> None:
 
     split_path = Path(args.split) if args.split else _M2_ROOT / "data/splits/test.jsonl"
     checkpoint_path = Path(args.checkpoint)
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = (_M2_ROOT / checkpoint_path).resolve()
     output_dir = Path(args.output_dir) if args.output_dir else _M2_ROOT / "outputs/reports/test"
 
     logger.warning("=" * 60)
@@ -74,6 +77,12 @@ def main() -> None:
     logger.warning(f"  test split : {split_path}")
     logger.warning("=" * 60)
 
+    init_run(
+        project="automend-model2",
+        run_name=f"eval-test-{checkpoint_path.name}",
+        tags=["eval", "test", "phase2", "final"],
+    )
+
     metrics = run_test_evaluation(
         test_split_path=split_path,
         checkpoint_path=checkpoint_path,
@@ -81,10 +90,15 @@ def main() -> None:
         eval_cfg=eval_cfg,
     )
 
+    log_eval_metrics(metrics, split="test")
+    finish_run()
+
     logger.success("Final benchmark complete.")
-    logger.info(f"  JSON parse rate : {metrics.get('json_parse_rate', 'N/A')}")
-    logger.info(f"  Non-empty rate  : {metrics.get('non_empty_rate', 'N/A')}")
-    logger.info(f"  Reports in      : {output_dir}")
+    logger.info(f"  json_parse_rate       : {metrics.get('phase1_structural/json_parse_rate', 'N/A')}")
+    logger.info(f"  schema_valid_rate     : {metrics.get('phase2a_schema/schema_valid_rate', 'N/A')}")
+    logger.info(f"  steps_count_match_rate: {metrics.get('phase2b_fields/steps_count_match_rate', 'N/A')}")
+    logger.info(f"  full_param_validity   : {metrics.get('phase2c_params/full_param_validity_rate', 'N/A')}")
+    logger.info(f"  Reports in            : {output_dir}")
 
 
 if __name__ == "__main__":

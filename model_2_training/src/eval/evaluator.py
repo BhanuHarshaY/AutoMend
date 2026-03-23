@@ -24,7 +24,13 @@ from model_2_training.src.eval.generator import (
     run_generation,
     save_predictions,
 )
-from model_2_training.src.eval.metrics_json import compute_metrics, summarize_errors
+from model_2_training.src.eval.metrics_json import summarize_errors
+from model_2_training.src.eval.metrics_aggregator import (
+    run_all_metrics,
+    get_per_field_report,
+    get_schema_errors,
+    get_param_errors,
+)
 from model_2_training.src.eval.save_reports import save_all_reports
 
 
@@ -83,12 +89,16 @@ def run_evaluation(
     preds_path = output_dir / f"{split_name}_predictions.jsonl"
     save_predictions(predictions, preds_path)
 
-    # --- Compute metrics ---
-    metrics = compute_metrics(predictions)
+    # --- Compute metrics (all phases) ---
+    metrics = run_all_metrics(predictions)
 
     # --- Summarize errors ---
     n_samples = eval_cfg.get("num_samples_to_save", 50)
     error_samples = summarize_errors(predictions, n_samples=n_samples)
+
+    # --- Per-phase supplementary reports ---
+    per_field_report = get_per_field_report(predictions)
+    param_errors     = get_param_errors(predictions, n_samples=n_samples)
 
     # --- Save reports ---
     report_paths = save_all_reports(
@@ -98,6 +108,8 @@ def run_evaluation(
         output_dir=output_dir,
         split_name=split_name,
         num_sample_outputs=n_samples,
+        per_field_report=per_field_report,
+        param_errors=param_errors,
     )
 
     logger.success(f"Evaluation complete. Reports written to: {output_dir}")

@@ -28,6 +28,7 @@ _AUTOMEND_ROOT = _M2_ROOT.parent
 sys.path.insert(0, str(_AUTOMEND_ROOT))
 
 from model_2_training.src.eval.evaluator import run_evaluation
+from model_2_training.src.tracking.wandb_logger import init_run, log_eval_metrics, finish_run
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,7 +61,15 @@ def main() -> None:
 
     split_path = Path(args.split) if args.split else _M2_ROOT / "data/splits/val.jsonl"
     checkpoint_path = Path(args.checkpoint)
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = (_M2_ROOT / checkpoint_path).resolve()
     output_dir = Path(args.output_dir) if args.output_dir else _M2_ROOT / "outputs/reports/val"
+
+    init_run(
+        project="automend-model2",
+        run_name=f"eval-val-{checkpoint_path.name}",
+        tags=["eval", "validation", "phase2"],
+    )
 
     metrics = run_evaluation(
         split_path=split_path,
@@ -70,9 +79,14 @@ def main() -> None:
         split_name="validation",
     )
 
+    log_eval_metrics(metrics, split="val")
+    finish_run()
+
     logger.success("Validation evaluation complete.")
-    logger.info(f"  JSON parse rate : {metrics.get('json_parse_rate', 'N/A')}")
-    logger.info(f"  Non-empty rate  : {metrics.get('non_empty_rate', 'N/A')}")
+    logger.info(f"  json_parse_rate       : {metrics.get('phase1_structural/json_parse_rate', 'N/A')}")
+    logger.info(f"  schema_valid_rate     : {metrics.get('phase2a_schema/schema_valid_rate', 'N/A')}")
+    logger.info(f"  steps_count_match_rate: {metrics.get('phase2b_fields/steps_count_match_rate', 'N/A')}")
+    logger.info(f"  full_param_validity   : {metrics.get('phase2c_params/full_param_validity_rate', 'N/A')}")
 
 
 if __name__ == "__main__":

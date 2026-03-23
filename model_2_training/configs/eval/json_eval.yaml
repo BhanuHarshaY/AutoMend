@@ -13,3 +13,10 @@ num_samples_to_save: 50
 
 # Checkpoint to evaluate (overridable via CLI)
 checkpoint_path: "outputs/checkpoints/best_model"
+
+# Phase 2 validation settings
+validation:
+  # Skip param validation for steps where no tool schema is extractable from context
+  skip_param_validation_on_no_schema: true
+  # Include per-field breakdown table in the markdown report
+  per_field_report: true

@@ -160,6 +160,36 @@ def log_json_metrics(metrics: dict, prefix: str = "eval") -> None:
         logger.warning(f"W&B log_json_metrics failed: {e}")
 
 
+def log_eval_metrics(metrics: dict, split: str = "val") -> None:
+    """
+    Log all Phase 1–2C evaluation metrics from metrics_aggregator.run_all_metrics().
+
+    Metrics already carry phase-namespaced keys (e.g. "phase1_structural/json_parse_rate").
+    This function logs them directly under a split prefix for W&B grouping:
+      val/phase1_structural/json_parse_rate
+      val/phase2a_schema/schema_valid_rate
+      ...
+
+    Skips non-scalar values (e.g. schema_error_distribution dict).
+
+    Args:
+        metrics: Output of metrics_aggregator.run_all_metrics().
+        split:   "val" or "test" — used as the top-level W&B namespace.
+    """
+    if not _check_wandb():
+        return
+    try:
+        loggable = {
+            f"{split}/{k}": v
+            for k, v in metrics.items()
+            if isinstance(v, (int, float))
+        }
+        wandb.log(loggable)
+        logger.info(f"W&B: logged {len(loggable)} eval metrics under '{split}/'")
+    except Exception as e:
+        logger.warning(f"W&B log_eval_metrics failed: {e}")
+
+
 def log_sample_predictions(predictions: list[dict], n: int = 20, step: int | None = None) -> None:
     """
     Log a sample of predictions as a W&B Table for inspection in the UI.
