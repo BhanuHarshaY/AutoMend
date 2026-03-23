@@ -33,6 +33,8 @@ def build_lora_config(
     lora_dropout: float = 0.05,
     target_modules: list[str] | None = None,
     bias: str = "none",
+    total_layers: int = 28,
+    lora_layers: int | None = None,
 ) -> LoraConfig:
     """
     Build a LoraConfig for supervised fine-tuning.
@@ -44,6 +46,10 @@ def build_lora_config(
         target_modules: List of module names to apply LoRA to.
                         Defaults to standard Qwen projection layers.
         bias: Bias training mode: "none", "all", or "lora_only".
+        total_layers: Total number of transformer layers in the model.
+        lora_layers: Number of layers (from the end) to apply LoRA to.
+                     None = all layers (default PEFT behaviour).
+                     16   = last 16 layers only (matches MLX default).
 
     Returns:
         Configured LoraConfig.
@@ -53,6 +59,17 @@ def build_lora_config(
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
         ]
+
+    layers_to_transform = None
+    if lora_layers is not None:
+        start = max(0, total_layers - lora_layers)
+        layers_to_transform = list(range(start, total_layers))
+        logger.info(
+            f"LoRA restricted to last {lora_layers} layers "
+            f"(layers {start}–{total_layers - 1})"
+        )
+    else:
+        logger.info("LoRA applied to all layers")
 
     logger.info(
         f"Building LoraConfig — r={r}, alpha={lora_alpha}, "
@@ -67,6 +84,7 @@ def build_lora_config(
         target_modules=target_modules,
         bias=bias,
         inference_mode=False,
+        layers_to_transform=layers_to_transform,
     )
 
 
@@ -115,11 +133,21 @@ def build_and_attach_lora(model, cfg: dict, is_quantized: bool = False):
     Returns:
         PEFT model with adapters attached.
     """
+    # Detect actual layer count from the model so this works for any architecture.
+    # Falls back to cfg["total_layers"] (if set), then 28 (Qwen2.5-1.5B default).
+    total_layers = (
+        getattr(getattr(model, "config", None), "num_hidden_layers", None)
+        or cfg.get("total_layers", 28)
+    )
+    logger.info(f"Model has {total_layers} transformer layers")
+
     lora_config = build_lora_config(
         r=cfg.get("lora_r", 16),
         lora_alpha=cfg.get("lora_alpha", 32),
         lora_dropout=cfg.get("lora_dropout", 0.05),
         target_modules=cfg.get("lora_target_modules"),
         bias=cfg.get("lora_bias", "none"),
+        total_layers=total_layers,
+        lora_layers=cfg.get("lora_layers"),
     )
     return attach_lora(model, lora_config, is_quantized=is_quantized)

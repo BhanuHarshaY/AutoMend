@@ -142,7 +142,11 @@ def _run_hf_training(
 
     # --- LoRA ---
     is_quantized = model_cfg.get("quantization") is not None
-    lora_cfg = {**train_cfg, "lora_target_modules": model_cfg.get("lora_target_modules")}
+    lora_cfg = {
+        **train_cfg,
+        "lora_target_modules": model_cfg.get("lora_target_modules"),
+        "lora_layers":         model_cfg.get("lora_layers"),
+    }
     model = build_and_attach_lora(model, lora_cfg, is_quantized=is_quantized)
 
     # --- Trainer ---

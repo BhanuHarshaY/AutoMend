@@ -19,3 +19,9 @@ lora_target_modules:
   - "gate_proj"
   - "up_proj"
   - "down_proj"
+
+# Number of transformer layers to apply LoRA to (counting from the last).
+# Qwen2.5-1.5B has 28 layers total.
+#   16 → last 16 layers only (matches MLX default, fewer trainable params)
+#   null → all layers (more capacity, default PEFT behaviour)
+lora_layers: 16
