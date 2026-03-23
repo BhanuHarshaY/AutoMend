@@ -443,6 +443,16 @@ python scripts\run_test.py `
   --config configs\eval\json_eval.yaml `
   --checkpoint outputs\checkpoints\best_model
 ```
+---
+
+### Viewing Results in Weights & Biases(WANDB)
+
+When viewing your evaluation runs (e.g., `eval-val-best_model`) in the W&B dashboard, you might notice that the default line charts appear empty, showing only a single dot on the far left at "Step 0".
+
+**Why this happens:** Unlike training scripts that log data continuously over hundreds of steps to draw a line, evaluation scripts calculate the final scores for the entire dataset and send a single snapshot of numbers to W&B exactly once. Because there is no "Step 1" or "Step 2" to connect to, W&B cannot draw a line.
+
+**How to view your metrics:**
+**The Summary Tab:** Open your specific evaluation run in W&B and look for the **Summary** table (usually located on the left side or within the Overview tab). Because evaluation is a one-time final result, this flat list is the most accurate and readable way to view all 34+ metrics.
 
 ---
 
