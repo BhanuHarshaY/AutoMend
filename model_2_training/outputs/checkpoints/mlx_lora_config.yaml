@@ -1,7 +1,7 @@
 model: Qwen/Qwen2.5-1.5B-Instruct
 train: true
 data: /Users/jennishachristinamartin/AutoMend_new/model_2_training/outputs/checkpoints/mlx_data
-adapter_path: /Users/jennishachristinamartin/AutoMend_new/model_2_training/outputs/checkpoints/Qwen2.5-1.5B-Instruct_4bit_lora-r16_200samples_20260322-0941
+adapter_path: /Users/jennishachristinamartin/AutoMend_new/model_2_training/outputs/checkpoints/Qwen2.5-1.5B-Instruct_4bit_lora-r16_200samples_20260322-1436
 iters: 300
 batch_size: 2
 lr_schedule:
@@ -19,9 +19,9 @@ lora_parameters:
   scale: 1.0
 steps_per_report: 10
 steps_per_eval: 100
-val_batches: 25
+val_batches: -1
 save_every: 100
 grad_checkpoint: true
 report_to: wandb
 wandb_project: automend-model2
-wandb_run_name: Qwen2.5-1.5B-Instruct_4bit_lora-r16_200samples_20260322-0941
+wandb_run_name: Qwen2.5-1.5B-Instruct_4bit_lora-r16_200samples_20260322-1436

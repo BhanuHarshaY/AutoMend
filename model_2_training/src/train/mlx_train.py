@@ -238,8 +238,14 @@ def run_mlx_training(
     iters = _compute_iters(train_cfg, mlx_data_dir / "train.jsonl")
 
     # --- Write YAML config ---
-    wandb_project  = os.environ.get("WANDB_PROJECT")
-    wandb_run_name = os.environ.get("WANDB_RUN_NAME")
+    # When running inside a W&B sweep, the agent sets WANDB_SWEEP_ID and
+    # WANDB_PROJECT in the parent env. If we pass wandb_project to the MLX
+    # config, mlx-lm will call wandb.init() in its subprocess — which conflicts
+    # with the already-active sweep run and times out. Skip W&B in the MLX
+    # config during sweeps; the outer run_sweep.py handles all tracking.
+    in_sweep       = bool(os.environ.get("WANDB_SWEEP_ID"))
+    wandb_project  = None if in_sweep else os.environ.get("WANDB_PROJECT")
+    wandb_run_name = None if in_sweep else os.environ.get("WANDB_RUN_NAME")
     # mlx-lm names the W&B run after os.path.basename(adapter_path), so use the
     # run name as the adapter directory so it appears correctly in the W&B UI.
     # After training we rename it to best_model/ for consistent downstream access.
@@ -265,7 +271,10 @@ def run_mlx_training(
     logger.info("=" * 60)
 
     cmd = [sys.executable, "-m", "mlx_lm", "lora", "--config", str(config_path)]
-    subprocess.run(cmd, check=True)
+    # Disable W&B inside the MLX subprocess — the outer sweep run already
+    # handles tracking. Two nested wandb.init() calls conflict and time out.
+    env = {**os.environ, "WANDB_MODE": "disabled"}
+    subprocess.run(cmd, check=True, env=env)
 
     # Rename run-named adapter dir → best_model/ for consistent downstream access
     if named_adapter_path != best_model_path and named_adapter_path.exists():
