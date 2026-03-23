@@ -384,29 +384,25 @@ You need:
 
 **Mac/Linux:**
 ```bash
-cd /path/to/AutoMend
-python3 model_2_training/scripts/run_split.py \
-  --data-config model_2_training/configs/data/track_b_chatml.yaml
+cd /path/to/AutoMend/model_2_training
+python3 scripts/run_split.py \
+  --config configs/data/track_b_chatml.yaml
 ```
 
 **Windows:**
 ```powershell
-cd C:\path\to\AutoMend
-python model_2_training\scripts\run_split.py `
-  --data-config model_2_training\configs\data\track_b_chatml.yaml
+cd C:\path\to\AutoMend\model_2_training
+python scripts\run_split.py `
+  --config configs\data\track_b_chatml.yaml
 ```
 
 ---
 
 ### Step 2 — Run Validation Evaluation (Phase 2 included)
 
-> **Important:** Run from the `AutoMend/` root. Pass `--config` and `--checkpoint` relative to
-> `model_2_training/` — the script prepends that root internally, so do **not** include
-> `model_2_training/` in these paths or they will double up.
-
 **Mac/Linux:**
 ```bash
-cd /path/to/AutoMend
+cd /path/to/AutoMend/model_2_training
 python3 scripts/run_eval.py \
   --config configs/eval/json_eval.yaml \
   --checkpoint outputs/checkpoints/best_model
@@ -414,7 +410,7 @@ python3 scripts/run_eval.py \
 
 **Windows:**
 ```powershell
-cd C:\path\to\AutoMend
+cd C:\path\to\AutoMend\model_2_training
 python scripts\run_eval.py `
   --config configs\eval\json_eval.yaml `
   --checkpoint outputs\checkpoints\best_model
@@ -432,12 +428,9 @@ INFO  | full_param_validity   : 1.0
 
 ### Step 3 — Run Test Evaluation (final benchmark only)
 
-> **Important:** Only run this once on the best model after all training decisions are made.
-> Same path rules apply — pass `--config` and `--checkpoint` relative to `model_2_training/`.
-
 **Mac/Linux:**
 ```bash
-cd /path/to/AutoMend
+cd /path/to/AutoMend/model_2_training
 python3 scripts/run_test.py \
   --config configs/eval/json_eval.yaml \
   --checkpoint outputs/checkpoints/best_model
@@ -445,7 +438,7 @@ python3 scripts/run_test.py \
 
 **Windows:**
 ```powershell
-cd C:\path\to\AutoMend
+cd C:\path\to\AutoMend\model_2_training
 python scripts\run_test.py `
   --config configs\eval\json_eval.yaml `
   --checkpoint outputs\checkpoints\best_model

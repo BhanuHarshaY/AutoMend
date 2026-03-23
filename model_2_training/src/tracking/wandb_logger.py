@@ -48,6 +48,7 @@ def init_run(
     config: dict | None = None,
     tags: list[str] | None = None,
     notes: str | None = None,
+    group: str | None = None,
 ) -> object | None:
     """
     Initialize a W&B run.
@@ -58,6 +59,8 @@ def init_run(
         config: Dict of hyperparameters to log.
         tags: Optional list of tags for filtering in W&B UI.
         notes: Optional free-text notes about the run.
+        group: W&B group name. Runs sharing the same group are clustered
+               together in the sidebar (e.g. train + eval for one checkpoint).
 
     Returns:
         The wandb.Run object if successful, else None.
@@ -71,6 +74,7 @@ def init_run(
             config=config or {},
             tags=tags or [],
             notes=notes,
+            group=group,
             reinit=True,
         )
         logger.info(f"W&B run initialized: {run.url}")

@@ -21,6 +21,7 @@ Usage:
 
 from __future__ import annotations
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -30,6 +31,9 @@ from loguru import logger
 _M2_ROOT = Path(__file__).resolve().parent.parent
 _AUTOMEND_ROOT = _M2_ROOT.parent
 sys.path.insert(0, str(_AUTOMEND_ROOT))
+
+from dotenv import load_dotenv
+load_dotenv(_AUTOMEND_ROOT / ".env")
 
 from model_2_training.src.test.run_testset import run_test_evaluation
 from model_2_training.src.tracking.wandb_logger import init_run, log_eval_metrics, finish_run
@@ -77,10 +81,19 @@ def main() -> None:
     logger.warning(f"  test split : {split_path}")
     logger.warning("=" * 60)
 
+    # Read the run_name written by training so this test run clusters with its
+    # training run under the same W&B group.
+    snapshot_path = checkpoint_path.parent / "run_config_snapshot.json"
+    group = None
+    if snapshot_path.exists():
+        with open(snapshot_path) as f:
+            group = json.load(f).get("run_name")
+
     init_run(
         project="automend-model2",
-        run_name=f"eval-test-{checkpoint_path.name}",
+        run_name=f"eval-test-{group or checkpoint_path.name}",
         tags=["eval", "test", "phase2", "final"],
+        group=group,
     )
 
     metrics = run_test_evaluation(

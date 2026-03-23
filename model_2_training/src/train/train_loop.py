@@ -61,10 +61,12 @@ def save_config_snapshot(
     train_cfg: dict,
     output_dir: Path,
     device: str,
+    run_name: str | None = None,
 ) -> None:
     """Save a snapshot of all configs + detected device for reproducibility."""
     snapshot = {
         "device":       device,
+        "run_name":     run_name,
         "data_config":  data_cfg,
         "model_config": model_cfg,
         "train_config": train_cfg,
@@ -244,11 +246,12 @@ def run_training(
     n_train     = data_cfg.get("max_train_samples") or "full"
     dt          = datetime.now().strftime("%Y%m%d-%H%M")
     run_name    = f"{model_short}_{quant}_lora-r{lora_r}_{n_train}samples_{dt}"
-    os.environ["WANDB_RUN_NAME"] = run_name
-    logger.info(f"W&B run name: {run_name}")
+    os.environ["WANDB_RUN_NAME"]  = run_name
+    os.environ["WANDB_RUN_GROUP"] = run_name   # group = run_name so eval runs cluster with train
+    logger.info(f"W&B run name / group: {run_name}")
 
-    # --- Config snapshot (includes detected device) ---
-    save_config_snapshot(data_cfg, model_cfg, train_cfg, output_dir, device)
+    # --- Config snapshot (includes detected device + run_name for eval grouping) ---
+    save_config_snapshot(data_cfg, model_cfg, train_cfg, output_dir, device, run_name=run_name)
 
     # --- Dispatch ---
     logger.info(f"Training backend: {'MLX (Apple Silicon)' if device == 'mps' else 'HuggingFace Transformers'}")
