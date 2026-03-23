@@ -1,0 +1,39 @@
+# Stronger baseline model — Qwen2.5-3B-Instruct
+#
+# Use this config with run_train.py to train a larger model as the
+# best non-RAG checkpoint candidate after Phase 2.75 sweeps confirm
+# that the 1.5B model is hitting a performance ceiling.
+#
+# Usage:
+#   python scripts/run_train.py \
+#       --data-config configs/data/track_b_chatml.yaml \
+#       --model-config configs/model/qwen_3b_baseline.yaml \
+#       --train-config configs/train/qlora_sft.yaml
+#
+# VRAM / RAM requirements:
+#   CUDA  : ~8 GB VRAM (4-bit NF4 quantization via bitsandbytes)
+#   MPS   : ~12 GB unified RAM (MLX fp32 + LoRA adapters)
+#   CPU   : ~12 GB system RAM (fp32, very slow — not recommended for 3B)
+
+# HuggingFace model name
+model_name: "Qwen/Qwen2.5-3B-Instruct"
+
+# Tokenizer (same as model for Qwen)
+tokenizer_name: "Qwen/Qwen2.5-3B-Instruct"
+
+# Quantization: null, "4bit", or "8bit"
+# 4bit keeps VRAM under 8 GB on CUDA; MLX backend ignores this field
+quantization: "4bit"
+
+# Device map for model loading
+device_map: "auto"
+
+# LoRA target modules — same architecture as 1.5B, same projection names
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"

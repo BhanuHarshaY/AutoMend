@@ -217,6 +217,44 @@ def save_param_errors(
     return path
 
 
+def save_taxonomy_report(predictions: list[dict], output_dir: Path, filename: str = "error_taxonomy.json") -> Path:
+    """
+    Save the labeled failure-category breakdown to a JSON report.
+
+    Expects predictions to already have "failure_category" set by
+    error_taxonomy.label_predictions() — this is called automatically by
+    compute_metrics(), so running evaluator.run_evaluation() is sufficient.
+    """
+    from model_2_training.src.eval.error_taxonomy import get_taxonomy_errors, TAXONOMY_LABELS
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / filename
+
+    counts: dict[str, int] = {label: 0 for label in TAXONOMY_LABELS}
+    for pred in predictions:
+        cat = pred.get("failure_category")
+        if cat in counts:
+            counts[cat] += 1
+
+    n = len(predictions)
+    summary = {
+        "total": n,
+        "categories": {
+            label: {
+                "count": counts[label],
+                "rate": round(counts[label] / n, 4) if n else 0.0,
+            }
+            for label in TAXONOMY_LABELS
+        },
+        "failures": get_taxonomy_errors(predictions),
+    }
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    logger.info(f"Taxonomy report saved -> {path}")
+    return path
+
+
 def save_all_reports(
     metrics: dict,
     predictions: list[dict],
@@ -240,6 +278,7 @@ def save_all_reports(
     )
     paths["error_samples"]  = save_error_samples(error_samples, output_dir)
     paths["sample_outputs"] = save_sample_outputs(predictions, output_dir, n=num_sample_outputs)
+    paths["taxonomy"]       = save_taxonomy_report(predictions, output_dir)
     if param_errors is not None:
         paths["param_errors"] = save_param_errors(param_errors, output_dir)
     return paths

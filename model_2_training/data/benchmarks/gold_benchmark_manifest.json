@@ -1,0 +1,15 @@
+{
+  "created_at": "2026-03-22T20:26:01.288858Z",
+  "source": "/Users/jennishachristinamartin/AutoMend_new/model_2_training/data/splits/test.jsonl",
+  "seed": 42,
+  "per_archetype": 10,
+  "total_selected": 30,
+  "archetype_counts": {
+    "multi_step": 10,
+    "refusal": 10,
+    "single_step": 10
+  },
+  "benchmark_path": "/Users/jennishachristinamartin/AutoMend_new/model_2_training/data/benchmarks/gold_benchmark.jsonl",
+  "locked": true,
+  "warning": "DO NOT rebuild without incrementing version. Rebuilding invalidates historical comparisons."
+}
