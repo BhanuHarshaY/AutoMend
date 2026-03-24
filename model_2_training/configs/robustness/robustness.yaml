@@ -1,0 +1,51 @@
+# Phase 3 — Robustness Evaluation Config
+#
+# Documents the default parameters used by perturbations.py.
+# Actual defaults are encoded in the module; this file serves as
+# a reference and can be extended to override defaults via CLI flags.
+
+perturbations:
+
+  typo:
+    # Per-character error probability.
+    # 5% means ~1 typo per 20 characters — realistic for fast typing.
+    rate: 0.05
+    seed: 42
+
+  noise:
+    # Where to inject the irrelevant sentence: prefix | suffix | both
+    # "prefix" is hardest — model must filter noise before reaching the task.
+    position: prefix
+    seed: 42
+
+  truncation:
+    # Fraction of words to drop from the end of the user message.
+    # 0.30 = drop last 30% — simulates an incomplete ticket submission.
+    drop_frac: 0.30
+    seed: 42
+
+  case_lower:
+    # No parameters — fully deterministic lowercasing.
+    # Tests sensitivity to capitalization patterns in training data.
+
+  paraphrase:
+    # Shuffle sentence order within the user message.
+    # Deterministic (no LLM). Tests order-sensitivity, not rephrasing.
+    seed: 42
+
+# Slice dimensions evaluated on clean predictions.
+# Each dimension produces a separate breakdown table in the Markdown report.
+slices:
+  - archetype       # multi_step | single_step | refusal
+  - dataset         # from sample.metadata.source (or "unknown")
+  - input_length    # short (<100 chars) | medium (100-300) | long (>300)
+  - complexity      # refusal | simple (1 step) | moderate (2-3) | complex (4+)
+
+# Key metrics tracked in robustness delta comparisons.
+# Positive delta = degradation under perturbation.
+key_metrics:
+  - phase1_structural/json_parse_rate
+  - phase1_structural/tax_valid_rate
+  - phase2a_schema/schema_valid_rate
+  - phase2b_fields/steps_count_match_rate
+  - phase2c_params/full_param_validity_rate
