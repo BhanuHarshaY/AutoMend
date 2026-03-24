@@ -72,16 +72,19 @@ def _has_balanced_braces(text: str) -> bool:
 def compute_metrics(predictions: list[dict]) -> dict[str, float | int]:
     """
     Compute all JSON structural quality metrics over a list of predictions.
+    Also runs error taxonomy labeling and merges taxonomy counts into metrics.
 
     Args:
         predictions: List of prediction dicts with at least a "generated" key.
 
     Returns:
-        Dict of metric_name -> value.
+        Dict of metric_name -> value, including taxonomy breakdown.
     """
     if not predictions:
         logger.warning("compute_metrics called with empty predictions list.")
         return {}
+
+    from model_2_training.src.eval.error_taxonomy import label_predictions, compute_taxonomy_counts
 
     generated_texts = [p.get("generated", "") or "" for p in predictions]
     n = len(generated_texts)
@@ -111,6 +114,11 @@ def compute_metrics(predictions: list[dict]) -> dict[str, float | int]:
         "quote_balance_rate": round(balanced_quotes / non_empty_n, 4),
         "brace_balance_rate": round(balanced_braces / non_empty_n, 4),
     }
+
+    # Merge taxonomy breakdown
+    label_predictions(predictions)
+    taxonomy = compute_taxonomy_counts(predictions)
+    metrics.update(taxonomy)
 
     logger.info("JSON Metrics:")
     for k, v in metrics.items():
