@@ -1,0 +1,9 @@
+# GCP-specific Python dependencies
+# Added on top of model_2_training/requirements.txt inside the Docker image
+# NOTE: kfp / google-cloud-aiplatform are NOT here — those run locally only (submit_pipeline.py)
+
+# GCS client (used by pipeline scripts to stage outputs, check paths)
+google-cloud-storage>=2.14.0
+
+# Secret Manager (loads WANDB_API_KEY at runtime — no secrets baked into image)
+google-cloud-secret-manager>=2.20.0

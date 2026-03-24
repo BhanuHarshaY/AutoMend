@@ -1,0 +1,44 @@
+# ---- secrets / credentials ----
+.env
+*.pem
+*.key
+service_account*.json
+credentials*.json
+gcp/service_account*.json
+
+# ---- model outputs (large, live in GCS) ----
+model_2_training/outputs/
+model_2_training/data/raw/
+
+# ---- W&B local cache ----
+wandb/
+model_2_training/wandb/
+
+# ---- Python cache ----
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ---- notebook / IDE artefacts ----
+.ipynb_checkpoints/
+*.ipynb
+.vscode/
+.idea/
+
+# ---- git ----
+.git/
+.gitignore
+
+# ---- docs (not needed in container) ----
+*.md
+*.pdf
+docs/
+
+# ---- other GCP infra files (not needed inside container) ----
+gcp/build_and_push.sh
+gcp/submit_pipeline.py

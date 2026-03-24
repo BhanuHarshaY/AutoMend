@@ -5,9 +5,9 @@ artifact_path: "data/processed/track_B_combined.jsonl"
 splits_dir: "data/splits"
 
 # Split ratios (must sum to 1.0)
-train_ratio: 0.80
-val_ratio: 0.10
-test_ratio: 0.10
+train_ratio: 0.90
+val_ratio: 0.05
+test_ratio: 0.05
 
 # Reproducibility
 shuffle_seed: 42
@@ -22,12 +22,8 @@ malformed_row_strategy: "skip"
 stratify_by:
   - source_dataset
 
-# --- TESTING CAPS (set to null to use full split) ---
-max_train_samples: 200
-max_val_samples: 50
-max_test_samples: 50
-
-# max_train_samples: null
-# max_val_samples: null
-# max_test_samples: null
+# Sample caps — set to null for full training, or a number to cap (e.g. for sweep trials)
+max_train_samples: null
+max_val_samples: null
+max_test_samples: null
 

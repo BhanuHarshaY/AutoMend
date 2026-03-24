@@ -96,7 +96,7 @@ def _run_hf_training(
         Path to best_model/ checkpoint directory.
     """
     from model_2_training.src.model.load_tokenizer import load_tokenizer
-    from model_2_training.src.model.load_qwen import load_qwen
+    from model_2_training.src.model.load_model import load_model
     from model_2_training.src.model.lora_factory import build_and_attach_lora
     from model_2_training.src.data.load_jsonl import load_jsonl
     from model_2_training.src.data.dataset_builder import build_dataset
@@ -135,7 +135,7 @@ def _run_hf_training(
     collator = AssistantOnlyCollator(tokenizer=tokenizer, max_seq_length=max_seq_length)
 
     # --- Model ---
-    model = load_qwen(
+    model = load_model(
         model_name=model_cfg["model_name"],
         quantization=model_cfg.get("quantization"),
         device_map=model_cfg.get("device_map", "auto"),

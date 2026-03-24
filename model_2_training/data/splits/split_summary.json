@@ -1,9 +1,9 @@
 {
   "artifact_path": "C:\\Users\\tajwa\\Desktop\\MLOPS_Product\\AutoMend\\data\\processed\\track_B_combined.jsonl",
   "seed": 42,
-  "train_size": 200,
-  "val_size": 50,
-  "test_size": 50,
+  "train_size": 2000,
+  "val_size": 200,
+  "test_size": 257,
   "total_valid": 5118,
   "splits_dir": "C:\\Users\\tajwa\\Desktop\\MLOPS_Product\\AutoMend\\model_2_training\\data\\splits",
   "train_path": "C:\\Users\\tajwa\\Desktop\\MLOPS_Product\\AutoMend\\model_2_training\\data\\splits\\train.jsonl",

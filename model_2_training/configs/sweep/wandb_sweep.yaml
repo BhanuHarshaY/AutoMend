@@ -10,7 +10,7 @@
 # Each sweep run calls scripts/run_sweep.py, which trains a model with
 # the suggested hyperparameters and scores it on the gold benchmark.
 
-program: scripts/run_sweep.py
+program: model_2_training/scripts/run_sweep.py
 project: automend-model2
 method: bayes          # Bayesian optimization — efficient for ~10–30 runs
 

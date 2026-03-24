@@ -1,0 +1,22 @@
+# Data config for W&B hyperparameter sweep trials.
+# Uses a capped subset so each trial runs in ~20-30 min instead of 2-3 hours.
+# Full training uses track_b_chatml.yaml (null caps).
+
+artifact_path: "data/processed/track_B_combined.jsonl"
+splits_dir: "data/splits"
+
+train_ratio: 0.90
+val_ratio: 0.05
+test_ratio: 0.05
+
+shuffle_seed: 42
+max_seq_length: 2048
+malformed_row_strategy: "skip"
+
+stratify_by:
+  - source_dataset
+
+# Sweep caps — enough data for meaningful signal, fast enough per trial
+max_train_samples: 2000
+max_val_samples: 200
+max_test_samples: null

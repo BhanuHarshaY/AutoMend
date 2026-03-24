@@ -43,7 +43,7 @@ load_dotenv(_AUTOMEND_ROOT / ".env")
 from model_2_training.src.train.train_loop import run_training
 from model_2_training.src.eval.evaluator import run_evaluation
 
-_BASE_DATA_CONFIG  = _M2_ROOT / "configs/data/track_b_chatml.yaml"
+_BASE_DATA_CONFIG  = _M2_ROOT / "configs/data/track_b_chatml_sweep.yaml"
 _BASE_MODEL_CONFIG = _M2_ROOT / "configs/model/qwen_baseline.yaml"
 _BASE_TRAIN_CONFIG = _M2_ROOT / "configs/train/qlora_sft.yaml"
 _BASE_EVAL_CONFIG  = _M2_ROOT / "configs/eval/json_eval.yaml"

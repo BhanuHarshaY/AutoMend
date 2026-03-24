@@ -1,7 +1,7 @@
 """
-load_qwen.py
+load_model.py
 
-Loads the Qwen baseline model for supervised fine-tuning.
+Loads a HuggingFace causal LM for supervised fine-tuning.
 
 Device routing
 --------------
@@ -54,14 +54,14 @@ def build_bnb_config(quantization: str) -> BitsAndBytesConfig:
         )
 
 
-def load_qwen(
+def load_model(
     model_name: str,
     quantization: str | None = "4bit",
     device_map: str = "auto",
     trust_remote_code: bool = True,
 ) -> AutoModelForCausalLM:
     """
-    Load a Qwen model from HuggingFace Hub with device-appropriate settings.
+    Load a causal LM from HuggingFace Hub with device-appropriate settings.
 
     Detects the active device via device.py and adjusts:
       - Quantization: 4-bit/8-bit on CUDA, disabled on CPU
@@ -72,10 +72,11 @@ def load_qwen(
     backend handles model loading for Apple Silicon via mlx_lm.load().
 
     Args:
-        model_name:        HuggingFace model ID, e.g. "Qwen/Qwen2.5-1.5B-Instruct".
+        model_name:        HuggingFace model ID, e.g. "Qwen/Qwen2.5-1.5B-Instruct"
+                           or "meta-llama/Llama-3.1-8B-Instruct".
         quantization:      "4bit", "8bit", or None. Ignored on CPU.
         device_map:        Config hint. Overridden per detected device.
-        trust_remote_code: Required True for Qwen models.
+        trust_remote_code: Set True for models that require it (e.g. Qwen).
 
     Returns:
         Loaded model ready for LoRA attachment.
@@ -87,15 +88,15 @@ def load_qwen(
 
     if device == "mps":
         raise RuntimeError(
-            "load_qwen() was called on MPS but Apple Silicon uses the MLX backend. "
+            "load_model() was called on MPS but Apple Silicon uses the MLX backend. "
             "Model loading is handled by mlx_lm.load() inside mlx_train.py. "
             "This is a bug in the training dispatcher — check train_loop.py."
         )
 
     dev_cfg = get_device_config(device, quantization)
-    effective_quant   = dev_cfg["effective_quantization"]
-    effective_dtype   = dev_cfg["torch_dtype"]
-    effective_dmap    = dev_cfg["device_map"]
+    effective_quant = dev_cfg["effective_quantization"]
+    effective_dtype = dev_cfg["torch_dtype"]
+    effective_dmap  = dev_cfg["device_map"]
 
     logger.info(f"Loading model: {model_name}")
     logger.info(

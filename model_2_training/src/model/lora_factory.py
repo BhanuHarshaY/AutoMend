@@ -93,7 +93,7 @@ def attach_lora(model, lora_config: LoraConfig, is_quantized: bool = False):
     Attach LoRA adapters to a loaded model.
 
     Args:
-        model: The base model returned by load_qwen.
+        model: The base model returned by load_model.
         lora_config: LoraConfig built by build_lora_config.
         is_quantized: If True, calls prepare_model_for_kbit_training first.
 

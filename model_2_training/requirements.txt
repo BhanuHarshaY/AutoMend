@@ -42,6 +42,10 @@ wandb>=0.17.0
 # --- Evaluation ---
 numpy>=1.24.0
 
+# --- GCP pipeline submission (local machine only — not needed inside Docker) ---
+kfp>=2.7.0
+google-cloud-aiplatform>=1.48.0
+
 # --- Dev/test ---
 pytest>=7.4.0
 

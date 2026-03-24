@@ -130,7 +130,7 @@ model_2_training/
 │   │
 │   ├── model/
 │   │   ├── load_tokenizer.py           # Tokenizer loader
-│   │   ├── load_qwen.py                # Qwen loader — CUDA/CPU only (MPS uses MLX)
+│   │   ├── load_model.py               # Model loader — CUDA/CPU only (MPS uses MLX)
 │   │   └── lora_factory.py             # PEFT LoRA attachment — CUDA/CPU only
 │   │
 │   ├── train/
@@ -139,10 +139,18 @@ model_2_training/
 │   │   ├── mlx_train.py                # ★ MLX backend: data prep + training + inference
 │   │   └── callbacks.py                # Custom Trainer callbacks
 │   │
+│   ├── schemas/
+│   │   └── workflow_schema.py          # Pydantic models for output contract validation (Phase 2A)
+│   │
 │   ├── eval/
 │   │   ├── generator.py                # ★ Device-aware inference (HF or MLX)
-│   │   ├── metrics_json.py             # 9 JSON structural quality metrics
-│   │   ├── save_reports.py             # Save metrics, markdown, sample outputs
+│   │   ├── metrics_json.py             # Phase 1: 9 JSON structural quality metrics
+│   │   ├── metrics_schema.py           # Phase 2A: Pydantic schema validation metrics
+│   │   ├── metrics_fields.py           # Phase 2B: Field-level correctness metrics
+│   │   ├── context_tool_parser.py      # Phase 2C: Extracts tool schemas from system messages
+│   │   ├── metrics_params.py           # Phase 2C: Parameter validation metrics
+│   │   ├── metrics_aggregator.py       # Phase 2D: Runs all phases, returns unified metrics dict
+│   │   ├── save_reports.py             # Save metrics, markdown, sample outputs, param errors
 │   │   └── evaluator.py                # Full eval pipeline orchestrator
 │   │
 │   ├── test/run_testset.py             # Test set eval wrapper
@@ -423,10 +431,12 @@ python scripts/run_eval.py \
 Auto-detects CUDA/MPS/CPU and uses the appropriate inference backend.
 
 Saves to `outputs/reports/val/`:
-- `metrics.json` — 9 structural quality metrics
-- `metrics_summary.md` — human-readable table
+- `metrics.json` — all Phase 1–2C metrics as a flat dict
+- `metrics_summary.md` — human-readable per-phase tables
 - `sample_outputs.json` — generated vs. reference pairs
-- `error_samples.json` — samples where JSON parse failed
+- `error_samples.json` — samples where JSON parse failed (Phase 1)
+- `param_errors.json` — steps that failed parameter validation (Phase 2C)
+- `validation_predictions.jsonl` — full prediction log
 
 ---
 
@@ -477,7 +487,7 @@ python scripts/run_test.py \
 |-----|---------|-------------|
 | `num_train_epochs` | `3` | Full training; `1` for smoke test |
 | `per_device_train_batch_size` | `2` | Reduce to `1` if OOM |
-| `gradient_accumulation_steps` | `8` | Effective batch = 2 × 8 = 16 |
+| `gradient_accumulation_steps` | `8` | Effective batch = 2 × 8 = 16. Set to `1` for smoke tests (same step count as MLX). |
 | `learning_rate` | `2e-4` | Initial LR (cosine decay) |
 | `warmup_ratio` | `0.05` | 5% warmup steps |
 | `lr_scheduler_type` | `"cosine"` | Cosine annealing |
@@ -509,8 +519,9 @@ python scripts/run_test.py \
 | Rank (r) | 16 | 16 |
 | Alpha (α) | 32 | 32 |
 | Dropout | 0.05 | 0.05 |
-| Target modules | `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj` | Last 16 transformer layers |
-| Trainable params | ~18M (~2.04% of 907M) | ~18M (approx.) |
+| Layers trained | Last 16 of 28 (layers 12–27) | Last 16 of 28 |
+| Target modules | `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj` | All projection layers in trained layers |
+| Trainable params | ~10.5M (~1.17% of 899M) | ~10.5M (approx.) |
 
 ### Loss Masking (CUDA / CPU only)
 
@@ -557,19 +568,49 @@ e.g.: ceil(200 / 2) × 1 = 100 iters for smoke test
 
 ## 12. Evaluation Metrics
 
-9 JSON structural quality metrics computed on generated outputs (device-agnostic):
+Evaluation runs four phases automatically. All metrics are written to `outputs/reports/val/metrics.json` with phase-namespaced keys.
 
-| Metric | Smoke Test (50 val samples, CUDA) | Interpretation |
-|--------|-----------------------------------|----------------|
+### Phase 1 — JSON Structural Quality (9 metrics)
+
+| Metric | Smoke Test (50 val, CUDA) | Interpretation |
+|--------|---------------------------|----------------|
 | Non-empty output rate | **100%** | Model always produces output |
 | Starts with `{` or `[` | **100%** | JSON structure always initiated |
 | Ends with `}` or `]` | **98%** | 1 sample slightly truncated |
 | JSON parse success rate | **96%** | 48/50 outputs are valid JSON |
-| Malformed JSON rate | 4% | 2 samples: unclosed strings from long code gen |
+| Malformed JSON rate | 4% | 2 samples: unclosed strings |
 | Truncation rate | 2% | 1 sample hit the max token limit |
 | Quote balance rate | **98%** | Strings properly closed |
 | Brace balance rate | **94%** | Nested braces mostly balanced |
 | Average output length | 392 chars | Not too terse, not runaway |
+
+### Phase 2A — Pydantic Schema Validation
+
+| Metric | Smoke Test | Description |
+|--------|------------|-------------|
+| `schema_valid_rate` | **94%** | Passes full Pydantic output contract |
+| `correct_shape_rate` | **90%** | Generated shape (tool/message) matches reference |
+| `extra_fields_rate` | 0% | No unexpected extra keys |
+| `wrong_type_rate` | 0% | No wrong field types |
+
+### Phase 2B — Field-Level Correctness
+
+| Metric | Smoke Test | Denominator |
+|--------|------------|-------------|
+| `tool_name_nonempty_rate` | **100%** | 57 steps |
+| `params_nonempty_rate` | **93%** | 57 steps |
+| `steps_count_match_rate` | **87.5%** | 48 parseable pairs |
+| `message_nonempty_rate` | **100%** | 18 message responses |
+| `steps_is_list_rate` | **100%** | 48 parseable |
+
+### Phase 2C — Parameter Validation
+
+| Metric | Smoke Test | Description |
+|--------|------------|-------------|
+| `param_schema_coverage_rate` | **89.5%** | Steps with an extractable tool schema |
+| `param_completeness_rate` | **100%** | All required params present |
+| `param_no_extras_rate` | **100%** | No unexpected params |
+| `full_param_validity_rate` | **100%** | All available checks passed |
 
 **Main failure mode with 200 samples:** over-calling (generates 2 tool steps when 1 is needed). Resolves significantly with full dataset training.
 
@@ -595,7 +636,11 @@ WANDB_PROJECT=automend-model2
 WANDB_ENTITY=your_wandb_username_or_team
 ```
 
-`run_train.py` calls `load_dotenv()` at startup — credentials are picked up automatically on every run, no `wandb login` required.
+`run_train.py`, `run_eval.py`, and `run_test.py` all call `load_dotenv()` at startup — credentials are picked up automatically on every run, no `wandb login` required.
+
+### MPS / MLX W&B
+
+W&B is fully integrated for MPS runs. `mlx_train.py` reads `WANDB_PROJECT` and `WANDB_RUN_NAME` from the environment and injects `report_to: wandb` into the `mlx_lm.lora` YAML config automatically. No extra steps needed — just set the credentials in `.env`.
 
 ### Disable W&B
 
@@ -603,8 +648,6 @@ WANDB_ENTITY=your_wandb_username_or_team
 # configs/train/qlora_sft.yaml
 report_to: "none"
 ```
-
-> W&B tracking for MPS runs is logged via the subprocess stdout. For full W&B integration in MLX, `mlx_lm.lora` supports a `--wandb-project` flag — this can be added to `build_mlx_lora_config()` in `mlx_train.py`.
 
 ---
 
@@ -631,11 +674,12 @@ outputs/
 │   └── run_config_snapshot.json             # All configs + detected device
 │
 └── reports/val/
-    ├── metrics.json
-    ├── metrics_summary.md
-    ├── sample_outputs.json
-    ├── error_samples.json
-    └── validation_predictions.jsonl
+    ├── metrics.json                         # All Phase 1–2C metrics (flat dict)
+    ├── metrics_summary.md                   # Human-readable per-phase tables
+    ├── sample_outputs.json                  # Generated vs. reference pairs
+    ├── error_samples.json                   # JSON parse failures (Phase 1)
+    ├── param_errors.json                    # Parameter validation failures (Phase 2C)
+    └── validation_predictions.jsonl         # Full prediction log
 ```
 
 ### Loading the trained adapter for inference
@@ -720,7 +764,7 @@ response = generate(model, tokenizer, prompt="...", max_tokens=512)
 ### 5. bitsandbytes on MPS / CPU
 
 **Error:** `CUDA not found` or similar when trying to use BnB on non-CUDA devices.
-**Fix:** `device.py` + `load_qwen.py` detect MPS/CPU and skip quantization entirely. MPS routes to the MLX backend; CPU loads in fp32.
+**Fix:** `device.py` + `load_model.py` detect MPS/CPU and skip quantization entirely. MPS routes to the MLX backend; CPU loads in fp32.
 
 ---
 
