@@ -1,27 +1,21 @@
 # ============================================================
 # AutoMend Training Container
-# Base: Official PyTorch image — PyTorch 2.3.0, Python 3.11, CUDA 12.1, cuDNN 8
+# Base: PyTorch 2.5.1, Python 3.11, CUDA 12.4, cuDNN 9
 # ============================================================
-FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
-# ---- system deps + gcsfuse + gcloud CLI (all from Google apt repo) ----
+# ---- system deps + gcsfuse (gcloud CLI NOT needed — we use Python SDKs) ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     fuse \
     curl \
     gnupg \
     lsb-release \
-    apt-transport-https \
-    ca-certificates \
     && echo "deb https://packages.cloud.google.com/apt gcsfuse-$(lsb_release -cs) main" \
        > /etc/apt/sources.list.d/gcsfuse.list \
-    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
-       > /etc/apt/sources.list.d/google-cloud-sdk.list \
     && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - \
-    && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
-       | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gcsfuse google-cloud-cli \
+    && apt-get install -y --no-install-recommends gcsfuse \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- working directory ----

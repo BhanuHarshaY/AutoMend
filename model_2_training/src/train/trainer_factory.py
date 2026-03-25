@@ -26,6 +26,7 @@ from loguru import logger
 from transformers import TrainingArguments, Trainer
 
 from model_2_training.src.utils.device import detect_device, get_device_config
+from model_2_training.src.train.callbacks import LoggingCallback, GPUMetricsCallback
 
 
 def build_training_args(cfg: dict, output_dir: str | Path) -> TrainingArguments:
@@ -70,6 +71,16 @@ def build_training_args(cfg: dict, output_dir: str | Path) -> TrainingArguments:
     output_dir = str(output_dir)
     logger.info(f"Building TrainingArguments — output_dir={output_dir}")
 
+    # Auto batch size: start with the configured batch size and let HF/accelerate
+    # find the largest power-of-2 that fits in GPU memory without OOM.
+    # Keeps the same effective batch (auto-adjusts gradient_accumulation_steps).
+    auto_batch = cfg.get("auto_find_batch_size", True if device == "cuda" else False)
+    if auto_batch:
+        logger.info(
+            "auto_find_batch_size=True — Trainer will scale batch size to "
+            "maximize GPU utilization (OOM-safe binary search)"
+        )
+
     return TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=cfg.get("num_train_epochs", 3),
@@ -94,6 +105,8 @@ def build_training_args(cfg: dict, output_dir: str | Path) -> TrainingArguments:
         # Precision — device-resolved, not blindly taken from config
         bf16=bf16,
         fp16=fp16,
+        # Auto batch size — finds largest batch that fits in GPU memory
+        auto_find_batch_size=auto_batch,
         dataloader_num_workers=cfg.get("dataloader_num_workers", 2),
         remove_unused_columns=cfg.get("remove_unused_columns", False),
         ddp_find_unused_parameters=False,
@@ -135,7 +148,8 @@ def build_trainer(
         data_collator=data_collator,
         # Transformers 5.x: tokenizer= renamed to processing_class=
         processing_class=tokenizer,
+        callbacks=[LoggingCallback(), GPUMetricsCallback()],
     )
 
-    logger.info("Trainer assembled successfully.")
+    logger.info("Trainer assembled successfully (with GPU metrics + timing callbacks).")
     return trainer

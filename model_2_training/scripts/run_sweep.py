@@ -24,6 +24,7 @@ Setup:
 from __future__ import annotations
 import argparse
 import sys
+import time
 import warnings
 from pathlib import Path
 
@@ -68,6 +69,11 @@ def _apply_sweep_params(train_cfg: dict, model_cfg: dict, sweep_params: dict) ->
         if key in train_keys:
             train_cfg[key] = value
             logger.info(f"  sweep override → {key} = {value}")
+
+    # Auto-set lora_alpha = 2 × lora_r if alpha wasn't swept
+    if "lora_r" in sweep_params and "lora_alpha" not in sweep_params:
+        train_cfg["lora_alpha"] = sweep_params["lora_r"] * 2
+        logger.info(f"  sweep auto-set → lora_alpha = {train_cfg['lora_alpha']} (2 × lora_r)")
 
 
 def run_sweep_trial(dry_run: bool = False) -> None:
@@ -135,15 +141,18 @@ def run_sweep_trial(dry_run: bool = False) -> None:
             return
 
         # ── Train ──────────────────────────────────────────────────────────
+        train_start = time.perf_counter()
         best_model_dir = run_training(
             data_cfg=data_cfg,
             model_cfg=model_cfg,
             train_cfg=train_cfg,
             m2_root=_M2_ROOT,
         )
-        logger.success(f"Training done — best checkpoint: {best_model_dir}")
+        train_duration = time.perf_counter() - train_start
+        logger.success(f"Training done in {train_duration:.1f}s ({train_duration / 60:.1f}min) — checkpoint: {best_model_dir}")
 
         # ── Benchmark eval ─────────────────────────────────────────────────
+        eval_start = time.perf_counter()
         output_dir = _M2_ROOT / "outputs/reports/sweeps" / run.name
         metrics = run_evaluation(
             split_path=_BENCHMARK_PATH,
@@ -152,6 +161,9 @@ def run_sweep_trial(dry_run: bool = False) -> None:
             eval_cfg=eval_cfg,
             split_name="benchmark",
         )
+        eval_duration = time.perf_counter() - eval_start
+        total_duration = train_duration + eval_duration
+        logger.info(f"Evaluation done in {eval_duration:.1f}s ({eval_duration / 60:.1f}min)")
 
         # Log to W&B under benchmark/ prefix so the sweep objective can find them.
         # Also log short-named aliases for metrics the sweep objective references
@@ -173,10 +185,31 @@ def run_sweep_trial(dry_run: bool = False) -> None:
         for full_key, short_key in _alias_map.items():
             if full_key in metrics:
                 benchmark_metrics[f"benchmark/{short_key}"] = metrics[full_key]
+
+        # Trial-level timing metrics
+        benchmark_metrics["timing/train_duration_s"] = round(train_duration, 1)
+        benchmark_metrics["timing/train_duration_min"] = round(train_duration / 60, 2)
+        benchmark_metrics["timing/eval_duration_s"] = round(eval_duration, 1)
+        benchmark_metrics["timing/total_trial_duration_s"] = round(total_duration, 1)
+        benchmark_metrics["timing/total_trial_duration_min"] = round(total_duration / 60, 2)
+
+        # GPU peak memory summary (if CUDA)
+        try:
+            import torch
+            if torch.cuda.is_available():
+                peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+                total_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                benchmark_metrics["gpu/trial_peak_memory_gb"] = round(peak_gb, 3)
+                benchmark_metrics["gpu/vram_total_gb"] = round(total_vram, 1)
+                benchmark_metrics["gpu/vram_utilization_pct"] = round((peak_gb / total_vram) * 100, 1)
+        except Exception:
+            pass
+
         wandb.log(benchmark_metrics)
-        logger.success(f"Sweep trial complete — benchmark metrics logged.")
+        logger.success(f"Sweep trial complete — {total_duration / 60:.1f}min total")
         logger.info(f"  benchmark/tax_valid_rate  : {metrics.get('phase1_structural/tax_valid_rate', 'N/A')}")
         logger.info(f"  benchmark/json_parse_rate : {metrics.get('phase1_structural/json_parse_rate', 'N/A')}")
+        logger.info(f"  timing: train={train_duration / 60:.1f}min, eval={eval_duration / 60:.1f}min, total={total_duration / 60:.1f}min")
 
 
 def parse_args() -> argparse.Namespace:

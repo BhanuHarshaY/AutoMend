@@ -25,7 +25,6 @@ Usage:
 
 from __future__ import annotations
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -33,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (
     PROJECT_ID, REGION, IMAGE_URI,
-    GCS_FUSE_MOUNT, TRAINER_SA, WANDB_SECRET_NAME,
+    TRAINER_SA,
     WANDB_PROJECT, WANDB_ENTITY,
     TRAIN_MACHINE_TYPE, TRAIN_ACCELERATOR, TRAIN_ACCEL_COUNT,
 )
@@ -107,11 +106,12 @@ def submit_sweep_trial(
             "image_uri": image,
             "command": command,
             "env": [
-                {"name": "WANDB_PROJECT",      "value": WANDB_PROJECT},
-                {"name": "WANDB_ENTITY",       "value": WANDB_ENTITY},
-                {"name": "WANDB_START_METHOD", "value": "thread"},
-                {"name": "PYTHONUNBUFFERED",   "value": "1"},
-                {"name": "PYTHONPATH",         "value": "/workspace"},
+                {"name": "WANDB_PROJECT",               "value": WANDB_PROJECT},
+                {"name": "WANDB_ENTITY",                "value": WANDB_ENTITY},
+                {"name": "WANDB_START_METHOD",          "value": "thread"},
+                {"name": "PYTHONUNBUFFERED",            "value": "1"},
+                {"name": "PYTHONPATH",                  "value": "/workspace"},
+                {"name": "PYTORCH_CUDA_ALLOC_CONF",     "value": "expandable_segments:True"},
             ],
         },
     }
@@ -135,52 +135,6 @@ def submit_sweep_trial(
     print(f"  Submitted: {job_display_name} — resource: {job.resource_name}")
 
 
-def create_scheduler_job(sweep_id: str, cloud_run_url: str, delay_hours: float) -> None:
-    """
-    Create a one-time Cloud Scheduler job that fires after delay_hours.
-    It calls the Cloud Run /trigger endpoint with the sweep_id.
-    Cloud Run will fetch best config + submit training pipeline automatically.
-    """
-    from datetime import datetime, timezone, timedelta
-    from google.cloud import scheduler_v1
-
-    client   = scheduler_v1.CloudSchedulerClient()
-    parent   = f"projects/{PROJECT_ID}/locations/{REGION}"
-    fire_at  = datetime.now(timezone.utc) + timedelta(hours=delay_hours)
-
-    # Cron: "minute hour day month *" — fires once at this specific date/time
-    cron = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
-
-    job_name = f"{parent}/jobs/automend-training-trigger"
-
-    # Delete existing job if present (so we can recreate with new sweep_id)
-    try:
-        client.delete_job(name=job_name)
-        print(f"  Replaced existing scheduler job")
-    except Exception:
-        pass
-
-    job = scheduler_v1.Job(
-        name=job_name,
-        schedule=cron,
-        time_zone="UTC",
-        http_target=scheduler_v1.HttpTarget(
-            uri=f"{cloud_run_url}/trigger",
-            http_method=scheduler_v1.HttpMethod.POST,
-            body=json.dumps({"sweep_id": sweep_id}).encode(),
-            headers={"Content-Type": "application/json"},
-            oidc_token=scheduler_v1.OidcToken(
-                service_account_email=TRAINER_SA,
-                audience=cloud_run_url,
-            ),
-        ),
-    )
-
-    client.create_job(parent=parent, job=job)
-    print(f"  Scheduler job created — fires at {fire_at.strftime('%Y-%m-%d %H:%M UTC')}")
-    print(f"  Cloud Run will auto-fetch best config + submit training pipeline")
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Auto-create W&B sweep and launch trials on Vertex AI."
@@ -200,17 +154,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-tag", default="latest",
         help="Docker image tag (default: latest)",
-    )
-    parser.add_argument(
-        "--cloud-run-url",
-        default=None,
-        help="Cloud Run service URL (e.g. https://automend-webhook-xxxx-uc.a.run.app). "
-             "If set, auto-creates Cloud Scheduler job after submitting trials.",
-    )
-    parser.add_argument(
-        "--delay-hours", type=float, default=6.0,
-        help="Hours after now to trigger the training pipeline (default: 6.0). "
-             "With 1x T4 GPU and 10 trials × ~30 min each = ~5 hours.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -251,18 +194,9 @@ def main() -> None:
         print(f"Monitor at: https://console.cloud.google.com/vertex-ai/training/custom-jobs?project={PROJECT_ID}")
         print(f"W&B sweep:  https://wandb.ai/{sweep_id}")
 
-        # Auto-create Cloud Scheduler job if Cloud Run URL provided
-        if args.cloud_run_url:
-            print()
-            print(f"Creating Cloud Scheduler job (fires in {args.delay_hours:.1f} hours)...")
-            create_scheduler_job(sweep_id, args.cloud_run_url, args.delay_hours)
-            print()
-            print("Pipeline will run automatically — nothing else needed.")
-        else:
-            print()
-            print("When all trials complete, fetch best config + train manually:")
-            print(f"  python model_2_training/scripts/fetch_best_config.py --sweep-id {sweep_id}")
-            print(f"  python gcp/pipelines/submit_training_pipeline.py --train-config best_sweep_config.yaml")
+        print()
+        print("When all trials complete, fetch best config + train:")
+        print(f"  python model_2_training/scripts/fetch_best_config.py --sweep-id {sweep_id}")
     else:
         print("Dry-run complete — no jobs submitted.")
 

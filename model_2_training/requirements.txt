@@ -23,7 +23,7 @@ accelerate>=0.29.0
 
 # --- PEFT / LoRA (CUDA + CPU only — not used on MPS) ---
 peft>=0.10.0
-#bitsandbytes>=0.43.0    # CUDA only; omit or ignore on MPS/CPU
+bitsandbytes>=0.46.1    # CUDA only; omit or ignore on MPS/CPU
 
 # --- Training ---
 trl>=0.8.0

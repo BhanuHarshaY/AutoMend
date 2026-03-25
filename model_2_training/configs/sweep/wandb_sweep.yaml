@@ -1,7 +1,8 @@
-# W&B Hyperparameter Sweep — AutoMend Track B (Qwen2.5 LoRA SFT)
+# W&B Hyperparameter Sweep — AutoMend Track B (Qwen2.5-1.5B LoRA SFT)
 #
-# Objective: find the best non-RAG checkpoint by sweeping LoRA rank,
-# learning rate, and batch configuration on the locked gold benchmark.
+# Aggressive sweep: only learning_rate and lora_r are searched.
+# Everything else is fixed to known-good defaults for a 1.5B model.
+# Bayes converges in ~5-8 trials with this tight search space.
 #
 # Run:
 #   1. Initialize:  wandb sweep configs/sweep/wandb_sweep.yaml
@@ -9,10 +10,12 @@
 #
 # Each sweep run calls scripts/run_sweep.py, which trains a model with
 # the suggested hyperparameters and scores it on the gold benchmark.
+#
+# NOTE: lora_alpha is NOT swept — run_sweep.py must set alpha = 2 × lora_r.
 
 program: model_2_training/scripts/run_sweep.py
 project: automend-model2
-method: bayes          # Bayesian optimization — efficient for ~10–30 runs
+method: bayes          # Bayesian optimization — converges in 5-8 trials
 
 metric:
   name: benchmark/tax_valid_rate   # primary: fraction of outputs with valid schema
@@ -24,40 +27,33 @@ early_terminate:
   eta: 2
 
 parameters:
-  # ─── Learning rate ────────────────────────────────────────────────────────
+  # ─── Swept: these two move the needle most ──────────────────────────────
   learning_rate:
     distribution: log_uniform_values
     min: 1.0e-5
     max: 5.0e-4
 
-  # ─── LoRA rank and alpha ──────────────────────────────────────────────────
   lora_r:
-    values: [8, 16, 32, 64]
+    values: [4, 8, 16]
 
-  lora_alpha:
-    values: [16, 32, 64]           # usually 2× lora_r; sweep lets us confirm
-
+  # ─── Fixed: known-good defaults for 1.5B model ─────────────────────────
   lora_dropout:
-    values: [0.0, 0.05, 0.1]
+    value: 0.05
 
-  # ─── Batch / gradient accumulation ───────────────────────────────────────
   per_device_train_batch_size:
-    values: [1, 2, 4]
+    value: 1
 
   gradient_accumulation_steps:
-    values: [4, 8, 16]             # effective batch = batch × accum
+    value: 8                       # effective batch = 1 × 8 = 8
 
-  # ─── LR schedule ─────────────────────────────────────────────────────────
   lr_scheduler_type:
-    values: ["cosine", "linear", "constant_with_warmup"]
+    value: "cosine"
 
   warmup_ratio:
-    values: [0.03, 0.05, 0.10]
+    value: 0.05
 
-  # ─── Epochs (keep small for sweep efficiency) ─────────────────────────────
   num_train_epochs:
-    values: [1, 2, 3]
+    value: 3
 
-  # ─── Weight decay ─────────────────────────────────────────────────────────
   weight_decay:
-    values: [0.0, 0.01, 0.1]
+    value: 0.01
