@@ -42,10 +42,18 @@ PIPELINE_NAME      = "automend-training-pipeline"
 PIPELINE_DISPLAY_NAME = "AutoMend QLoRA Training"
 
 # ---- Vertex AI compute ----
-# Training step — L4 GPU (or T4 if L4 quota not available)
-TRAIN_MACHINE_TYPE = "n1-standard-8"
-TRAIN_ACCELERATOR  = "NVIDIA_TESLA_T4"
+TRAIN_MACHINE_TYPE = "g2-standard-8"   # 1× L4 24 GB VRAM, 8 vCPU, 32 GB RAM
+TRAIN_ACCELERATOR  = "NVIDIA_L4"
 TRAIN_ACCEL_COUNT  = 1
 
 # Eval / test steps — CPU is fine (inference on saved adapter)
 EVAL_MACHINE_TYPE  = "n1-standard-4"
+
+# ---- Compute Engine (alternative backend for Workflow 1) ----
+# g2-standard-8 = 1× L4 24 GB VRAM, 8 vCPU, 32 GB RAM (Iowa / us-central1)
+# The GPU is built into the G2 machine type — no separate accelerator attachment.
+CE_ZONE                = "us-central1-a"          # Iowa; L4s available in -a, -b, -c, -f
+CE_MACHINE_TYPE        = "g2-standard-8"           # 1× L4 24 GB
+CE_DISK_IMAGE_PROJECT  = "deeplearning-platform-release"
+CE_DISK_IMAGE_FAMILY   = "common-cu128-ubuntu-2204-nvidia-570"  # CUDA 12.8, driver 570, Ubuntu 22.04
+CE_DISK_SIZE_GB        = 100

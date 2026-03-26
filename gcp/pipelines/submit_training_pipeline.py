@@ -6,6 +6,7 @@ Submits the AutoMend production training pipeline to Vertex AI Pipelines.
 Use this for:
   - Workflow 2: Full training with best sweep config (split→train→eval→test→benchmark→robustness)
   - Workflow 3: Retrain on new data (split→train→eval→test)
+  - Resume: Run only benchmark+robustness against an existing checkpoint
 
 Usage (run from repo root):
     # Full pipeline (Workflow 2) — after sweep is complete
@@ -18,6 +19,10 @@ Usage (run from repo root):
     python gcp/pipelines/submit_training_pipeline.py \\
         --train-config configs/train/best_sweep_config.yaml
 
+    # Resume from existing checkpoint (skip split→train→eval→test)
+    python gcp/pipelines/submit_training_pipeline.py \\
+        --resume-from-checkpoint /gcs/automend-model2/outputs/runs/20260325-170915/checkpoints/best_model
+
     # Dry-run — compile YAML only, do not submit
     python gcp/pipelines/submit_training_pipeline.py --dry-run
 """
@@ -25,6 +30,7 @@ Usage (run from repo root):
 from __future__ import annotations
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -38,9 +44,8 @@ from config import (
 )
 
 # Paths inside the container (configs are baked into the image)
-_CONFIGS = "/workspace/model_2_training/configs"
-_CHECKPOINT = f"{GCS_FUSE_MOUNT}/outputs/checkpoints/best_model"
-_BENCHMARK  = f"{GCS_FUSE_MOUNT}/data/benchmarks/gold_benchmark.jsonl"
+_CONFIGS   = "/workspace/model_2_training/configs"
+_BENCHMARK = f"{GCS_FUSE_MOUNT}/data/benchmarks/gold_benchmark.jsonl"
 
 
 def _image(tag: str) -> str:
@@ -48,7 +53,7 @@ def _image(tag: str) -> str:
     return f"{base}:{tag}"
 
 
-def build_pipeline(image_tag: str, retrain_only: bool, train_config: str):
+def build_pipeline(image_tag: str, retrain_only: bool, train_config: str, run_id: str, resume_from_checkpoint: str = ""):
     try:
         from kfp import dsl
         from kfp.dsl import PipelineTask
@@ -67,21 +72,25 @@ def build_pipeline(image_tag: str, retrain_only: bool, train_config: str):
         from kfp import dsl
 
         @dsl.container_component
-        def _op() -> dsl.ContainerSpec:
+        def _op():
             return dsl.ContainerSpec(
                 image=image,
                 command=command,
-                env={
-                    "WANDB_PROJECT":      WANDB_PROJECT,
-                    "WANDB_ENTITY":       WANDB_ENTITY,
-                    "WANDB_START_METHOD": "thread",
-                    "PYTHONUNBUFFERED":   "1",
-                    "PYTHONPATH":         "/workspace",
-                },
             )
 
         task = _op()
         task.set_display_name(name)
+
+        # Set environment variables on the task (env not supported in ContainerSpec)
+        for k, v in {
+            "WANDB_PROJECT":      WANDB_PROJECT,
+            "WANDB_ENTITY":       WANDB_ENTITY,
+            "WANDB_START_METHOD": "thread",
+            "PYTHONUNBUFFERED":   "1",
+            "PYTHONPATH":         "/workspace",
+            "PROJECT_ID":         PROJECT_ID,
+        }.items():
+            task.set_env_variable(k, v)
 
         if use_gpu:
             task.set_accelerator_type(TRAIN_ACCELERATOR)
@@ -92,10 +101,21 @@ def build_pipeline(image_tag: str, retrain_only: bool, train_config: str):
 
         return task
 
-    pipeline_desc = (
-        f"{PIPELINE_DISPLAY_NAME} — retrain" if retrain_only
-        else f"{PIPELINE_DISPLAY_NAME} — full"
-    )
+    if resume_from_checkpoint:
+        # Derive run_root from checkpoint path:
+        # .../outputs/runs/{run_id}/checkpoints/best_model → .../outputs/runs/{run_id}
+        _checkpoint = resume_from_checkpoint
+        _run_root   = resume_from_checkpoint.rstrip("/").rsplit("/checkpoints", 1)[0]
+        pipeline_desc = f"{PIPELINE_DISPLAY_NAME} — resume (benchmark+robustness)"
+    else:
+        pipeline_desc = (
+            f"{PIPELINE_DISPLAY_NAME} — retrain" if retrain_only
+            else f"{PIPELINE_DISPLAY_NAME} — full"
+        )
+        # Timestamped paths — unique per run, persisted on GCS via FUSE mount
+        _run_root   = f"{GCS_FUSE_MOUNT}/outputs/runs/{run_id}"
+        _checkpoint = f"{_run_root}/checkpoints/best_model"
+        _output_dir = f"{_run_root}/checkpoints"
 
     @dsl.pipeline(
         name=PIPELINE_NAME,
@@ -104,79 +124,123 @@ def build_pipeline(image_tag: str, retrain_only: bool, train_config: str):
     )
     def training_pipeline():
 
-        # ---- Step 1: Split ------------------------------------------------
-        split_op = _make_op(
-            "1 · Split data",
-            command=[
-                "python", "-m", "model_2_training.scripts.run_split",
-                "--config", f"{_CONFIGS}/data/track_b_chatml.yaml",
-            ],
-        )
-
-        # ---- Step 2: Train ------------------------------------------------
-        train_op = _make_op(
-            "2 · QLoRA training (GPU)",
-            command=[
-                "python", "-m", "model_2_training.scripts.run_train",
-                "--data-config",  f"{_CONFIGS}/data/track_b_chatml.yaml",
-                "--model-config", f"{_CONFIGS}/model/qwen_baseline.yaml",
-                "--train-config", f"{_CONFIGS}/train/{train_config}",
-            ],
-            use_gpu=True,
-        )
-        train_op.after(split_op)
-
-        # ---- Step 3: Eval (val) -------------------------------------------
-        eval_op = _make_op(
-            "3 · Evaluate — val set",
-            command=[
-                "python", "-m", "model_2_training.scripts.run_eval",
-                "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
-                "--checkpoint", _CHECKPOINT,
-                "--split",      f"{GCS_FUSE_MOUNT}/data/splits/val.jsonl",
-                "--output-dir", f"{GCS_FUSE_MOUNT}/outputs/reports/val",
-            ],
-        )
-        eval_op.after(train_op)
-
-        # ---- Step 4: Test -------------------------------------------------
-        test_op = _make_op(
-            "4 · Evaluate — test set",
-            command=[
-                "python", "-m", "model_2_training.scripts.run_test",
-                "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
-                "--checkpoint", _CHECKPOINT,
-                "--split",      f"{GCS_FUSE_MOUNT}/data/splits/test.jsonl",
-                "--output-dir", f"{GCS_FUSE_MOUNT}/outputs/reports/test",
-            ],
-        )
-        test_op.after(eval_op)
-
-        # ---- Step 5 & 6: Benchmark + Robustness (Workflow 2 only) ----------
-        if not retrain_only:
+        if resume_from_checkpoint:
+            # ---- Resume: only Benchmark + Robustness ----------------------
             benchmark_op = _make_op(
                 "5 · Benchmark — gold set",
                 command=[
                     "python", "-m", "model_2_training.scripts.run_benchmark",
                     "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
-                    "--checkpoint", _CHECKPOINT,
+                    "--checkpoint", _checkpoint,
                     "--benchmark",  _BENCHMARK,
-                    "--output-dir", f"{GCS_FUSE_MOUNT}/outputs/reports/benchmark",
+                    "--output-dir", f"{_run_root}/reports/benchmark",
                 ],
+                use_gpu=True,
             )
-            benchmark_op.after(test_op)
 
             robustness_op = _make_op(
                 "6 · Robustness evaluation",
                 command=[
                     "python", "-m", "model_2_training.scripts.run_robustness",
                     "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
-                    "--checkpoint", _CHECKPOINT,
+                    "--checkpoint", _checkpoint,
                     "--benchmark",  _BENCHMARK,
-                    "--output-dir", f"{GCS_FUSE_MOUNT}/outputs/reports/robustness",
+                    "--output-dir", f"{_run_root}/reports/robustness",
                 ],
+                use_gpu=True,
             )
             robustness_op.after(benchmark_op)
+
+        else:
+            # ---- Step 1: Split --------------------------------------------
+            split_op = _make_op(
+                "1 · Split data",
+                command=[
+                    "python", "-m", "model_2_training.scripts.run_split",
+                    "--config",     f"{_CONFIGS}/data/track_b_chatml.yaml",
+                    "--artifact",   f"{GCS_FUSE_MOUNT}/data/track_B_combined.jsonl",
+                    "--splits-dir", f"{GCS_FUSE_MOUNT}/data/splits",
+                ],
+            )
+
+            # ---- Step 2: Train --------------------------------------------
+            # train_config is either:
+            #   - a filename (e.g. "best_sweep_config.yaml") → baked into image
+            #   - a full path (e.g. "/gcs/automend-model2/configs/train/best_sweep_config.yaml")
+            #     → read from GCS FUSE mount (no image rebuild needed)
+            train_config_path = (
+                train_config if train_config.startswith("/")
+                else f"{_CONFIGS}/train/{train_config}"
+            )
+            train_op = _make_op(
+                "2 · QLoRA training (GPU)",
+                command=[
+                    "python", "-m", "model_2_training.scripts.run_train",
+                    "--data-config",  f"{_CONFIGS}/data/track_b_chatml.yaml",
+                    "--model-config", f"{_CONFIGS}/model/qwen_baseline.yaml",
+                    "--train-config", train_config_path,
+                    "--output-dir",   _output_dir,
+                    "--splits-dir",   f"{GCS_FUSE_MOUNT}/data/splits",
+                ],
+                use_gpu=True,
+            )
+            train_op.after(split_op)
+
+            # ---- Step 3: Eval (val) ---------------------------------------
+            eval_op = _make_op(
+                "3 · Evaluate — val set",
+                command=[
+                    "python", "-m", "model_2_training.scripts.run_eval",
+                    "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
+                    "--checkpoint", _checkpoint,
+                    "--split",      f"{GCS_FUSE_MOUNT}/data/splits/val.jsonl",
+                    "--output-dir", f"{_run_root}/reports/val",
+                ],
+                use_gpu=True,
+            )
+            eval_op.after(train_op)
+
+            # ---- Step 4: Test ---------------------------------------------
+            test_op = _make_op(
+                "4 · Evaluate — test set",
+                command=[
+                    "python", "-m", "model_2_training.scripts.run_test",
+                    "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
+                    "--checkpoint", _checkpoint,
+                    "--split",      f"{GCS_FUSE_MOUNT}/data/splits/test.jsonl",
+                    "--output-dir", f"{_run_root}/reports/test",
+                ],
+                use_gpu=True,
+            )
+            test_op.after(eval_op)
+
+            # ---- Step 5 & 6: Benchmark + Robustness (Workflow 2 only) ----
+            if not retrain_only:
+                benchmark_op = _make_op(
+                    "5 · Benchmark — gold set",
+                    command=[
+                        "python", "-m", "model_2_training.scripts.run_benchmark",
+                        "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
+                        "--checkpoint", _checkpoint,
+                        "--benchmark",  _BENCHMARK,
+                        "--output-dir", f"{_run_root}/reports/benchmark",
+                    ],
+                    use_gpu=True,
+                )
+                benchmark_op.after(test_op)
+
+                robustness_op = _make_op(
+                    "6 · Robustness evaluation",
+                    command=[
+                        "python", "-m", "model_2_training.scripts.run_robustness",
+                        "--config",     f"{_CONFIGS}/eval/json_eval.yaml",
+                        "--checkpoint", _checkpoint,
+                        "--benchmark",  _BENCHMARK,
+                        "--output-dir", f"{_run_root}/reports/robustness",
+                    ],
+                    use_gpu=True,
+                )
+                robustness_op.after(benchmark_op)
 
     return training_pipeline
 
@@ -203,6 +267,14 @@ def parse_args() -> argparse.Namespace:
         help="Compile pipeline YAML but do NOT submit",
     )
     parser.add_argument(
+        "--resume-from-checkpoint", default="",
+        help=(
+            "Skip split→train→eval→test and run only benchmark+robustness against an existing "
+            "checkpoint on GCS. Provide the full FUSE path, e.g. "
+            "/gcs/automend-model2/outputs/runs/20260325-170915/checkpoints/best_model"
+        ),
+    )
+    parser.add_argument(
         "--output-yaml", default="gcp/pipelines/training_pipeline.yaml",
         help="Where to write compiled YAML (default: gcp/pipelines/training_pipeline.yaml)",
     )
@@ -212,10 +284,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+
     pipeline_fn = build_pipeline(
         image_tag=args.image_tag,
         retrain_only=args.retrain_only,
         train_config=args.train_config,
+        run_id=run_id,
+        resume_from_checkpoint=args.resume_from_checkpoint,
     )
 
     try:
@@ -248,12 +324,26 @@ def main() -> None:
         enable_caching=False,
     )
 
-    workflow = "Retrain (Workflow 3)" if args.retrain_only else "Full training (Workflow 2)"
+    if args.resume_from_checkpoint:
+        workflow = "Resume — benchmark+robustness only"
+    elif args.retrain_only:
+        workflow = "Retrain (Workflow 3)"
+    else:
+        workflow = "Full training (Workflow 2)"
     print(f"\nSubmitting: {workflow}")
     print(f"  Project      : {PROJECT_ID}")
     print(f"  Region       : {REGION}")
     print(f"  Image        : {_image(args.image_tag)}")
-    print(f"  Train config : configs/train/{args.train_config}")
+    if args.resume_from_checkpoint:
+        print(f"  Checkpoint   : {args.resume_from_checkpoint}")
+    else:
+        train_config_display = (
+            args.train_config if args.train_config.startswith("/")
+            else f"configs/train/{args.train_config}"
+        )
+        print(f"  Train config : {train_config_display}")
+        print(f"  Run ID       : {run_id}")
+        print(f"  Outputs      : gs://automend-model2/outputs/runs/{run_id}/")
     print(f"  SA           : {TRAINER_SA}")
 
     job.submit(service_account=TRAINER_SA)

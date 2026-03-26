@@ -15,6 +15,7 @@ quick experiments without editing YAML files.
 
 from __future__ import annotations
 import argparse
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -37,6 +38,23 @@ sys.path.insert(0, str(_AUTOMEND_ROOT))
 load_dotenv(_AUTOMEND_ROOT / ".env")
 
 from model_2_training.src.train.train_loop import run_training
+
+
+def _load_wandb_api_key() -> None:
+    """Fetch WANDB_API_KEY from Secret Manager if not already set (GCP runtime)."""
+    if os.environ.get("WANDB_API_KEY"):
+        return
+    project_id = os.environ.get("PROJECT_ID", "automend")
+    try:
+        from google.cloud import secretmanager
+        client   = secretmanager.SecretManagerServiceClient()
+        response = client.access_secret_version(
+            name=f"projects/{project_id}/secrets/WANDB_API_KEY/versions/latest"
+        )
+        os.environ["WANDB_API_KEY"] = response.payload.data.decode().strip()
+        logger.info(f"WANDB_API_KEY loaded from Secret Manager (project={project_id})")
+    except Exception as exc:
+        logger.warning(f"Could not load WANDB_API_KEY from Secret Manager: {exc}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +94,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override per_device_train_batch_size from train config.",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Override checkpoint output directory (e.g. GCS FUSE path for pipeline runs).",
+    )
+    parser.add_argument(
+        "--splits-dir",
+        default=None,
+        help="Override splits directory (e.g. GCS FUSE path for pipeline runs).",
+    )
     return parser.parse_args()
 
 
@@ -88,6 +116,7 @@ def load_yaml(path: Path) -> dict:
 
 
 def main() -> None:
+    _load_wandb_api_key()
     args = parse_args()
 
     data_cfg = load_yaml(_M2_ROOT / args.data_config)
@@ -95,6 +124,12 @@ def main() -> None:
     train_cfg = load_yaml(_M2_ROOT / args.train_config)
 
     # Apply CLI overrides
+    if args.output_dir is not None:
+        train_cfg["output_dir"] = args.output_dir
+        logger.info(f"Override: output_dir={args.output_dir}")
+    if args.splits_dir is not None:
+        data_cfg["splits_dir"] = args.splits_dir
+        logger.info(f"Override: splits_dir={args.splits_dir}")
     if args.epochs is not None:
         train_cfg["num_train_epochs"] = args.epochs
         logger.info(f"Override: num_train_epochs={args.epochs}")

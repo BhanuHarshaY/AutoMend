@@ -1,0 +1,101 @@
+# PIPELINE DEFINITION
+# Name: automend-training-pipeline
+# Description: AutoMend QLoRA Training — resume (benchmark+robustness)
+components:
+  comp-op:
+    executorLabel: exec-op
+  comp-op-2:
+    executorLabel: exec-op-2
+defaultPipelineRoot: gs://automend-model2/pipeline_runs
+deploymentSpec:
+  executors:
+    exec-op:
+      container:
+        command:
+        - python
+        - -m
+        - model_2_training.scripts.run_benchmark
+        - --config
+        - /workspace/model_2_training/configs/eval/json_eval.yaml
+        - --checkpoint
+        - /gcs/automend-model2/outputs/runs/20260325-170915/checkpoints/best_model
+        - --benchmark
+        - /gcs/automend-model2/data/benchmarks/gold_benchmark.jsonl
+        - --output-dir
+        - /gcs/automend-model2/outputs/runs/20260325-170915/reports/benchmark
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model2
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train:latest
+        resources:
+          cpuLimit: 4.0
+          memoryLimit: 16.0
+          resourceCpuLimit: '4'
+          resourceMemoryLimit: 16G
+    exec-op-2:
+      container:
+        command:
+        - python
+        - -m
+        - model_2_training.scripts.run_robustness
+        - --config
+        - /workspace/model_2_training/configs/eval/json_eval.yaml
+        - --checkpoint
+        - /gcs/automend-model2/outputs/runs/20260325-170915/checkpoints/best_model
+        - --benchmark
+        - /gcs/automend-model2/data/benchmarks/gold_benchmark.jsonl
+        - --output-dir
+        - /gcs/automend-model2/outputs/runs/20260325-170915/reports/robustness
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model2
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train:latest
+        resources:
+          cpuLimit: 4.0
+          memoryLimit: 16.0
+          resourceCpuLimit: '4'
+          resourceMemoryLimit: 16G
+pipelineInfo:
+  description: "AutoMend QLoRA Training \u2014 resume (benchmark+robustness)"
+  name: automend-training-pipeline
+root:
+  dag:
+    tasks:
+      op:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op
+        taskInfo:
+          name: "5 \xB7 Benchmark \u2014 gold set"
+      op-2:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op-2
+        dependentTasks:
+        - op
+        taskInfo:
+          name: "6 \xB7 Robustness evaluation"
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0

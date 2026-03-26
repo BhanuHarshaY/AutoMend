@@ -1285,7 +1285,7 @@ All written to `outputs/reports/robustness/<checkpoint_name>/`:
 
 ## 11. GCP Cloud Deployment
 
-> Production deployment of the AutoMend training pipeline on Google Cloud Platform using Vertex AI for GPU compute, Cloud Run for orchestration webhooks, and Cloud Scheduler for automated trigger timing.
+> Production deployment of the AutoMend training pipeline on Google Cloud Platform using Vertex AI Pipelines for GPU compute, Cloud Run for orchestration webhooks, and Cloud Scheduler for automated trigger timing.
 
 ### Architecture
 
@@ -1300,29 +1300,36 @@ All written to `outputs/reports/robustness/<checkpoint_name>/`:
                 │                        │
                 ▼                        ▼
 ┌──────────────────────┐    ┌────────────────────────────────────────┐
-│  W&B Sweep (W1)      │    │  Vertex AI Pipeline (W2/W3)            │
-│  10 × T4 GPU trials  │    │  Split → Train → Eval → Test →         │
-│  Bayesian optimizer  │    │  Benchmark → Robustness                │
-│  picks best config   │    │  (T4 GPU for training step)            │
-└──────────┬───────────┘    └────────────────────────────────────────┘
-           │
-           ▼
-┌──────────────────────┐    ┌────────────────────────────────────────┐
-│  Cloud Scheduler     │───►│  Cloud Run (automend-webhook)          │
-│  fires after N hours │    │  /trigger endpoint:                    │
-│  (auto-created by    │    │  1. Check sweep finished               │
-│   submit_sweep.py)   │    │  2. Fetch best config from W&B         │
-└──────────────────────┘    │  3. Upload config to GCS               │
+│  W&B Sweep (W1)      │    │  Vertex AI Pipeline (W2/W3/W4)         │
+│  N × L4 GPU trials   │    │  1. Split      (CPU)                   │
+│  Bayesian optimizer  │    │  2. Train      (L4 GPU)                │
+│  picks best config   │    │  3. Eval       (L4 GPU)                │
+└──────────┬───────────┘    │  4. Test       (L4 GPU)                │
+           │                │  5. Benchmark  (L4 GPU)                │
+           ▼                │  6. Robustness (L4 GPU)                │
+┌──────────────────────┐    └────────────────────────────────────────┘
+│  Cloud Scheduler     │───►┌────────────────────────────────────────┐
+│  fires after N hours │    │  Cloud Run (automend-webhook)          │
+│  (auto-created by    │    │  /trigger endpoint:                    │
+│   submit_sweep.py)   │    │  1. Check sweep finished               │
+└──────────────────────┘    │  2. Fetch best config from W&B         │
+                            │  3. Upload config to GCS               │
                             │  4. Submit Vertex AI Pipeline          │
                             └────────────────────────────────────────┘
                                           │
                                           ▼
                             ┌────────────────────────────────────────┐
                             │  GCS Bucket: gs://automend-model2      │
-                            │  ├── data/splits/                      │
-                            │  ├── configs/best_sweep_config.yaml    │
-                            │  ├── outputs/checkpoints/best_model/   │
-                            │  └── outputs/reports/                  │
+                            │  ├── data/                             │
+                            │  │   ├── track_B_combined.jsonl        │
+                            │  │   ├── splits/                       │
+                            │  │   └── benchmarks/                   │
+                            │  │       └── gold_benchmark.jsonl      │
+                            │  ├── configs/train/                    │
+                            │  │   └── best_sweep_config.yaml        │
+                            │  └── outputs/runs/<run_id>/            │
+                            │      ├── checkpoints/best_model/       │
+                            │      └── reports/                      │
                             └────────────────────────────────────────┘
 ```
 
@@ -1336,11 +1343,12 @@ All written to `outputs/reports/robustness/<checkpoint_name>/`:
 | Region | `us-central1` |
 | GCS Bucket | `gs://automend-model2` |
 | Artifact Registry | `us-central1-docker.pkg.dev/automend/automend-images` |
-| Docker Image | `automend-train:latest` |
-| Training Machine | `n1-standard-8` + NVIDIA Tesla T4 |
-| Eval / Test Machine | `n1-standard-4` (CPU) |
+| Docker Image | `automend-train:latest` (PyTorch 2.5.1 + CUDA 12.4) |
+| Training Machine | `g2-standard-8` + NVIDIA L4 24 GB |
+| Eval / Benchmark / Robustness | `g2-standard-8` + NVIDIA L4 24 GB (GPU inference) |
+| Split Machine | CPU only (`n1-standard-4`) |
 | Trainer Service Account | `automend-trainer@automend.iam.gserviceaccount.com` |
-| W&B API Key Secret | `wandb-api-key` (in Secret Manager) |
+| W&B API Key Secret | `WANDB_API_KEY` (in Secret Manager) |
 | Cloud Run Service | `automend-webhook` |
 | W&B Project | `automend-model2` (entity: `mlops-team-northeastern-university`) |
 
@@ -1350,17 +1358,17 @@ All written to `outputs/reports/robustness/<checkpoint_name>/`:
 
 ```
 gcp/
-├── Dockerfile                        # Training container (PyTorch + CUDA + gcsfuse + gcloud CLI)
+├── Dockerfile                        # Training container (PyTorch 2.5.1 + CUDA 12.4 + gcsfuse)
 ├── .dockerignore                     # Excludes .env, outputs/, data/splits/, wandb/
 ├── requirements-gcp.txt              # GCP Python dependencies for container
-├── config.py                         # Central GCP config (project, region, SA, etc.)
+├── config.py                         # Central GCP config (project, region, SA, machine types)
 ├── build_and_push.sh                 # Build Docker image and push to Artifact Registry
 │
 ├── jobs/
-│   └── submit_sweep_agent.py         # Workflow 1: launch W&B sweep trials on Vertex AI
+│   └── submit_sweep_agent.py         # Workflow 1: launch W&B sweep trials on Vertex AI or CE
 │
 ├── pipelines/
-│   └── submit_training_pipeline.py   # Workflow 2/3: full training pipeline (KFP)
+│   └── submit_training_pipeline.py   # Workflow 2/3/4: full training pipeline (KFP v2)
 │
 └── cloud_run/
     ├── main.py                       # Flask webhook: /trigger + /health endpoints
@@ -1372,14 +1380,14 @@ gcp/
 
 ### Prerequisites
 
-**Windows:**
+**Windows (use Git Bash for all commands):**
 
 1. Install [Google Cloud SDK](https://cloud.google.com/sdk/docs/install-sdk#windows)
 2. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (enable WSL2 backend)
 3. Install Python 3.11+ (Conda recommended)
 4. Authenticate:
 
-```powershell
+```bash
 gcloud auth login
 gcloud auth application-default login
 gcloud config set project automend
@@ -1397,7 +1405,8 @@ gcloud config set project automend
 **Python dependencies (both platforms):**
 
 ```bash
-pip install google-cloud-aiplatform kfp wandb google-cloud-scheduler pyyaml
+pip install google-cloud-aiplatform kfp wandb pyyaml python-dotenv loguru \
+            google-cloud-storage google-cloud-secret-manager
 ```
 
 ---
@@ -1415,7 +1424,8 @@ gcloud services enable \
   run.googleapis.com \
   cloudscheduler.googleapis.com \
   secretmanager.googleapis.com \
-  storage.googleapis.com
+  storage.googleapis.com \
+  compute.googleapis.com
 ```
 
 #### Step 2 — Create Artifact Registry Repository
@@ -1455,20 +1465,34 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 ```bash
 echo -n "YOUR_WANDB_API_KEY" | \
-  gcloud secrets create wandb-api-key \
+  gcloud secrets create WANDB_API_KEY \
     --data-file=- \
     --replication-policy=automatic
 ```
 
-#### Step 6 — Request GPU Quota
+> The secret name must be exactly `WANDB_API_KEY`. The training container fetches it at runtime via the Python Secret Manager SDK — no gcloud CLI required inside the container.
 
-Go to **IAM & Admin → Quotas** → search for `NVIDIA_TESLA_T4` in `us-central1` → request an increase to at least 10.
+#### Step 6 — Upload Required Data Files to GCS
+
+The pipeline reads training data and benchmark files from the GCS FUSE mount. Upload once before running any pipeline:
+
+```bash
+gsutil cp model_2_training/data/processed/track_B_combined.jsonl \
+  gs://automend-model2/data/track_B_combined.jsonl
+
+gsutil cp model_2_training/data/benchmarks/gold_benchmark.jsonl \
+  gs://automend-model2/data/benchmarks/gold_benchmark.jsonl
+```
+
+#### Step 7 — Request GPU Quota
+
+Go to **IAM & Admin → Quotas** → search for `NVIDIA_L4` in `us-central1` → request an increase to at least 1 under **Vertex AI API**.
 
 ---
 
 ### Build & Push Docker Image
 
-Run from the **repo root** (`AutoMend/`):
+Run from the **repo root** (`AutoMend/`). Only needed once, or after changing code inside `model_2_training/` or `gcp/scripts/`:
 
 ```bash
 # macOS / Linux / Git Bash on Windows
@@ -1478,80 +1502,46 @@ bash gcp/build_and_push.sh
 bash gcp/build_and_push.sh v1.2
 ```
 
-**Windows (PowerShell — if Git Bash is unavailable):**
-
-```powershell
-docker build --file gcp/Dockerfile `
-  --tag us-central1-docker.pkg.dev/automend/automend-images/automend-train:latest `
-  --platform linux/amd64 .
-docker push us-central1-docker.pkg.dev/automend/automend-images/automend-train:latest
-```
-
-> The Docker image includes: PyTorch 2.3 + CUDA 12.1, gcsfuse (GCS FUSE mount), gcloud CLI, and all training dependencies from `requirements-gcp.txt`.
+> The Docker image includes: PyTorch 2.5.1 + CUDA 12.4 + cuDNN 9, gcsfuse (GCS FUSE mount), and all training dependencies. Scripts that run locally (like `submit_training_pipeline.py`) do **not** require a rebuild.
 
 ---
 
-### Workflow 1 — Hyperparameter Sweep (Fully Automated)
+### Workflow 1 — Hyperparameter Sweep
 
-Uses W&B Bayesian optimization to find the best hyperparameters, then automatically triggers full training via Cloud Run webhook.
-
-#### How it works
-
-```
-submit_sweep_agent.py
-  ├── 1. Creates W&B sweep from configs/sweep/wandb_sweep.yaml
-  ├── 2. Launches N Vertex AI Custom Training Jobs (parallel)
-  │        Each job: wandb agent --count 1 <sweep_id>
-  └── 3. Creates Cloud Scheduler job (fires after --delay-hours)
-           Cloud Scheduler → Cloud Run /trigger
-             ├── checks sweep finished
-             ├── fetches best config from W&B
-             ├── uploads to gs://automend-model2/configs/best_sweep_config.yaml
-             └── submits Vertex AI full training pipeline
-```
-
-#### Run
+Uses W&B Bayesian optimization to find the best hyperparameters. Runs N parallel trials on Vertex AI or Compute Engine GPU VMs.
 
 ```bash
+# Auto-create sweep + launch 10 trials on Vertex AI
+python gcp/jobs/submit_sweep_agent.py --trials 10
+
+# Resume an existing sweep
 python gcp/jobs/submit_sweep_agent.py \
-  --trials 10 \
-  --cloud-run-url https://automend-webhook-XXXX-uc.a.run.app \
-  --delay-hours 6
+  --sweep-id mlops-team-northeastern-university/automend-model2/<sweep_id> \
+  --trials 5
+
+# Dry-run (verify config, no jobs submitted)
+python gcp/jobs/submit_sweep_agent.py --trials 3 --dry-run
 ```
 
 **Flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--trials` | 10 | Number of parallel sweep trials to launch |
-| `--sweep-id` | (auto-created) | Resume an existing sweep instead of creating one |
-| `--image-tag` | latest | Docker image tag to use for training jobs |
-| `--cloud-run-url` | None | Cloud Run URL — enables auto-scheduling via Cloud Scheduler |
-| `--delay-hours` | 6.0 | Hours until Cloud Scheduler fires (set > expected sweep duration) |
-| `--dry-run` | False | Print config only — do not submit any jobs |
-
-**Dry-run (verify configuration before spending GPU time):**
-
-```bash
-python gcp/jobs/submit_sweep_agent.py --trials 3 --dry-run
-```
-
-**Resume an existing sweep:**
-
-```bash
-python gcp/jobs/submit_sweep_agent.py \
-  --sweep-id mlops-team-northeastern-university/automend-model2/abc123 \
-  --trials 5
-```
+| `--backend` | `vertex` | `vertex` (managed) or `compute-engine` (self-deleting GPU VMs) |
+| `--trials` | 10 | Number of parallel sweep trials |
+| `--sweep-id` | (auto-created) | Resume an existing W&B sweep |
+| `--image-tag` | `latest` | Docker image tag |
+| `--cloud-run-url` | None | Cloud Run URL for automated post-sweep pipeline trigger |
+| `--delay-hours` | 6.0 | Hours until Cloud Scheduler fires |
+| `--dry-run` | False | Print config only, do not submit |
 
 **Monitor:**
-
-- Vertex AI jobs: `https://console.cloud.google.com/vertex-ai/training/custom-jobs?project=automend`
-- W&B sweep dashboard: `https://wandb.ai/mlops-team-northeastern-university/automend-model2`
+- Vertex AI Jobs: `https://console.cloud.google.com/vertex-ai/training/custom-jobs?project=automend`
+- W&B Sweep: `https://wandb.ai/mlops-team-northeastern-university/automend-model2`
 
 ---
 
-### Workflow 2 — Full Training Pipeline (Manual)
+### Workflow 2 — Full Training Pipeline (after sweep)
 
 Run after the sweep completes to train the final model with the best hyperparameters.
 
@@ -1562,25 +1552,32 @@ python model_2_training/scripts/fetch_best_config.py \
   --sweep-id mlops-team-northeastern-university/automend-model2/<sweep_id>
 ```
 
-This downloads the best trial's hyperparameters and writes them to `best_sweep_config.yaml`.
+This script finds the best-scoring trial (by `benchmark/tax_valid_rate`), merges its hyperparameters into the base config, saves locally, and **uploads to GCS automatically** — no image rebuild needed when config changes.
 
-#### Step 2 — Submit full training pipeline to Vertex AI
+#### Step 2 — Submit full training pipeline
 
 ```bash
+# Windows (Git Bash) — MSYS_NO_PATHCONV=1 prevents path mangling
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py \
+  --train-config /gcs/automend-model2/configs/train/best_sweep_config.yaml
+
+# macOS / Linux
 python gcp/pipelines/submit_training_pipeline.py \
-  --train-config best_sweep_config.yaml
+  --train-config /gcs/automend-model2/configs/train/best_sweep_config.yaml
 ```
 
 **Pipeline stages (executed in order on Vertex AI):**
 
 | Stage | Machine | Description |
 |-------|---------|-------------|
-| **Split** | CPU | train/val/test split (90/5/5) |
-| **Train** | T4 GPU | QLoRA fine-tuning with best hyperparameters |
-| **Eval** | CPU | Validation set — all 54 Phase 1–2C metrics |
-| **Test** | CPU | Test set — all 54 Phase 1–2C metrics |
-| **Benchmark** | CPU | Phase 2.5 gold benchmark scoring |
-| **Robustness** | CPU | Phase 3 robustness + slice evaluation |
+| **1 · Split** | CPU | train/val/test split (90/5/5) — writes splits to GCS |
+| **2 · Train** | L4 GPU | QLoRA fine-tuning — checkpoint saved to `gs://automend-model2/outputs/runs/<run_id>/` |
+| **3 · Eval** | L4 GPU | Validation set evaluation |
+| **4 · Test** | L4 GPU | Test set evaluation |
+| **5 · Benchmark** | L4 GPU | Gold benchmark scoring (30 samples) |
+| **6 · Robustness** | L4 GPU | Robustness + slice evaluation |
+
+Each run gets a unique timestamped `run_id` (`YYYYMMDD-HHMMSS`) — outputs never overwrite each other.
 
 **Monitor:** `https://console.cloud.google.com/vertex-ai/pipelines?project=automend`
 
@@ -1591,27 +1588,58 @@ python gcp/pipelines/submit_training_pipeline.py \
 Use when new data is available and the sweep does not need to be re-run.
 
 ```bash
+# Windows
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py --retrain-only
+
+# macOS / Linux
 python gcp/pipelines/submit_training_pipeline.py --retrain-only
 ```
 
-**Pipeline stages:** Split → Train → Eval → Test (benchmark and robustness skipped unless explicitly included).
+**Pipeline stages:** Split → Train → Eval → Test (Benchmark and Robustness skipped).
+
+---
+
+### Workflow 4 — Resume from Checkpoint
+
+Use when the pipeline failed on step 5 or 6 but training already completed. Skips split/train/eval/test and runs only Benchmark + Robustness against the existing checkpoint on GCS.
+
+```bash
+# Find your run_id
+gsutil ls gs://automend-model2/outputs/runs/
+
+# Windows
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py \
+  --resume-from-checkpoint /gcs/automend-model2/outputs/runs/<run_id>/checkpoints/best_model
+
+# macOS / Linux
+python gcp/pipelines/submit_training_pipeline.py \
+  --resume-from-checkpoint /gcs/automend-model2/outputs/runs/<run_id>/checkpoints/best_model
+```
+
+---
+
+### Pipeline Flags Reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--train-config` | `qlora_sft.yaml` | Config filename (baked in image) or full GCS FUSE path |
+| `--retrain-only` | `False` | Workflow 3: split→train→eval→test only |
+| `--resume-from-checkpoint` | `""` | Workflow 4: skip to benchmark+robustness using existing checkpoint |
+| `--image-tag` | `latest` | Docker image tag |
+| `--dry-run` | `False` | Compile pipeline YAML only, do not submit |
 
 ---
 
 ### Cloud Run Webhook Setup
 
-The Cloud Run webhook is required only when using Workflow 1's fully automated mode (Cloud Scheduler → Cloud Run → Vertex AI pipeline submission). Deploy once:
-
-#### Build and push the webhook image
+Required only for Workflow 1 fully automated mode (sweep → auto-trigger training). Deploy once:
 
 ```bash
+# Build and push webhook image
 gcloud builds submit gcp/cloud_run/ \
   --tag us-central1-docker.pkg.dev/automend/automend-images/automend-webhook:latest
-```
 
-#### Deploy to Cloud Run
-
-```bash
+# Deploy
 gcloud run deploy automend-webhook \
   --image us-central1-docker.pkg.dev/automend/automend-images/automend-webhook:latest \
   --platform managed \
@@ -1620,11 +1648,8 @@ gcloud run deploy automend-webhook \
   --service-account automend-trainer@automend.iam.gserviceaccount.com \
   --memory 512Mi \
   --timeout 600
-```
 
-#### Get the URL (pass this to `submit_sweep_agent.py`)
-
-```bash
+# Get URL
 gcloud run services describe automend-webhook \
   --region us-central1 \
   --format "value(status.url)"
@@ -1634,10 +1659,8 @@ gcloud run services describe automend-webhook \
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/trigger` | POST | Triggered by Cloud Scheduler — fetches best config and submits Vertex AI pipeline |
-| `/health` | GET | Returns `{"status": "ok"}` — used for liveness checks |
-
-> `/trigger` returns `503` if the sweep is not yet complete. Cloud Scheduler retries automatically. Increase `--delay-hours` if you see repeated retries.
+| `/trigger` | POST | Fetch best config + submit Vertex AI pipeline |
+| `/health` | GET | Returns `{"status": "ok"}` |
 
 ---
 
@@ -1649,11 +1672,9 @@ gcloud run services describe automend-webhook \
 PROJECT_ID         = "automend"
 REGION             = "us-central1"
 GCS_BUCKET         = "automend-model2"
-ARTIFACT_REGISTRY  = "us-central1-docker.pkg.dev/automend/automend-images"
-TRAIN_MACHINE_TYPE = "n1-standard-8"
-TRAIN_ACCELERATOR  = "NVIDIA_TESLA_T4"
+TRAIN_MACHINE_TYPE = "g2-standard-8"   # 1× L4 24 GB VRAM, 8 vCPU, 32 GB RAM
+TRAIN_ACCELERATOR  = "NVIDIA_L4"
 TRAIN_ACCEL_COUNT  = 1
-EVAL_MACHINE_TYPE  = "n1-standard-4"
 WANDB_PROJECT      = "automend-model2"
 WANDB_ENTITY       = "mlops-team-northeastern-university"
 ```
@@ -1686,63 +1707,70 @@ Both use a 90/5/5 train/val/test split.
 
 | Resource | Unit Cost | Typical Usage | Estimate |
 |----------|-----------|--------------|---------|
-| T4 GPU (n1-standard-8) | ~$0.55/hr | 10 trials × 30 min | ~$2.75/sweep |
-| T4 GPU (full training) | ~$0.55/hr | ~3–5 hours | ~$1.65–$2.75 |
+| L4 GPU (`g2-standard-8`) Vertex AI | ~$0.70/hr | 10 trials × 30 min | ~$3.50/sweep |
+| L4 GPU (full training pipeline) | ~$0.70/hr | ~3–5 hours | ~$2.10–$3.50 |
 | Cloud Run | ~$0 | Very low traffic | <$0.01 |
 | GCS storage | ~$0.02/GB/mo | ~10–50 GB | <$1/mo |
 | Cloud Scheduler | Free tier | 1 job/sweep | $0 |
-
-> Costs are estimates based on GCP list pricing. Actual cost depends on region and spot pricing availability.
 
 ---
 
 ### GCP Troubleshooting
 
-**`gcloud: command not found` inside container**
+**Git Bash converts `/gcs/...` paths to `C:/Program Files/Git/gcs/...`**
 
-The Docker image must include the gcloud CLI. Rebuild after verifying `gcp/Dockerfile` installs `google-cloud-cli`:
-
-```dockerfile
-RUN apt-get install -y google-cloud-cli
+Prefix pipeline submission commands with `MSYS_NO_PATHCONV=1`:
+```bash
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py \
+  --train-config /gcs/automend-model2/configs/train/best_sweep_config.yaml
 ```
-
-Then rebuild and push: `bash gcp/build_and_push.sh`
 
 ---
 
 **`WANDB_API_KEY not set` inside Vertex AI job**
 
-The container fetches the key at runtime:
+The training container fetches the key at runtime via the Python Secret Manager SDK. Verify:
+1. The secret exists: `gcloud secrets list --project=automend` — you should see `WANDB_API_KEY`
+2. The trainer SA has `roles/secretmanager.secretAccessor`
+3. `PROJECT_ID` env var is passed to the container (it is — set in `submit_training_pipeline.py`)
 
+Test the secret:
 ```bash
-export WANDB_API_KEY=$(gcloud secrets versions access latest --secret=wandb-api-key)
+gcloud secrets versions access latest --secret=WANDB_API_KEY --project=automend
 ```
-
-Requires gcloud CLI in the image and the service account to have `roles/secretmanager.secretAccessor`.
 
 ---
 
-**Vertex AI jobs stuck in PENDING**
+**`FileNotFoundError` for training data or benchmark inside container**
 
-Usually a GPU quota issue. Check your current quota:
-
+The container reads data via the GCS FUSE mount. Check the files exist:
 ```bash
-gcloud compute regions describe us-central1 --format="value(quotas)" | grep NVIDIA_T4
+gsutil ls gs://automend-model2/data/track_B_combined.jsonl
+gsutil ls gs://automend-model2/data/benchmarks/gold_benchmark.jsonl
 ```
 
-Request an increase at: **IAM & Admin → Quotas** → `NVIDIA_TESLA_T4_GPUS` in `us-central1`.
+If missing, upload them (see Step 6 in One-Time GCP Setup above).
 
 ---
 
-**Cloud Scheduler fires before sweep finishes**
+**Benchmark or robustness step failed but training completed**
 
-The `/trigger` endpoint returns `503` if the sweep is not done, causing Cloud Scheduler to retry. Increase `--delay-hours` to be safe (default: 6 hours for 10 × T4 trials).
+Use Workflow 4 (`--resume-from-checkpoint`) to rerun only steps 5+6:
+```bash
+gsutil ls gs://automend-model2/outputs/runs/   # find run_id
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py \
+  --resume-from-checkpoint /gcs/automend-model2/outputs/runs/<run_id>/checkpoints/best_model
+```
+
+---
+
+**Vertex AI pipeline stuck in PENDING**
+
+GPU quota issue. Request an increase at: **IAM & Admin → Quotas** → `NVIDIA_L4_GPUS` under **Vertex AI API** in `us-central1`.
 
 ---
 
 **`Permission denied` on Vertex AI submission**
-
-Ensure the service account has `roles/aiplatform.user`:
 
 ```bash
 gcloud projects add-iam-policy-binding automend \
@@ -1754,7 +1782,13 @@ gcloud projects add-iam-policy-binding automend \
 
 **Docker build fails on Windows**
 
-Use Git Bash or WSL2 to run `bash gcp/build_and_push.sh`. PowerShell may have path separator issues. If WSL2 is unavailable, build manually with the PowerShell command in [Build & Push Docker Image](#build--push-docker-image).
+Use Git Bash or WSL2. If unavailable, build manually:
+```bash
+docker build --file gcp/Dockerfile \
+  --tag us-central1-docker.pkg.dev/automend/automend-images/automend-train:latest \
+  --platform linux/amd64 .
+docker push us-central1-docker.pkg.dev/automend/automend-images/automend-train:latest
+```
 
 ---
 
@@ -1770,25 +1804,29 @@ gcloud billing projects link automend --billing-account=XXXXXX-XXXXXX-XXXXXX
 ### GCP Quick Reference
 
 ```bash
-# 1. Build and push the training image
+# ── One-time setup ──────────────────────────────────────────────────
+gsutil cp model_2_training/data/processed/track_B_combined.jsonl \
+  gs://automend-model2/data/track_B_combined.jsonl
+gsutil cp model_2_training/data/benchmarks/gold_benchmark.jsonl \
+  gs://automend-model2/data/benchmarks/gold_benchmark.jsonl
 bash gcp/build_and_push.sh
 
-# 2. Run sweep (10 trials, fully automated — Cloud Scheduler triggers pipeline)
-python gcp/jobs/submit_sweep_agent.py \
-  --trials 10 \
-  --cloud-run-url https://automend-webhook-XXXX-uc.a.run.app \
-  --delay-hours 6
+# ── Workflow 1: sweep ────────────────────────────────────────────────
+python gcp/jobs/submit_sweep_agent.py --trials 10
 
-# 3. (Manual alternative) fetch best config after sweep finishes
+# ── Workflow 2: full training after sweep (Windows) ──────────────────
 python model_2_training/scripts/fetch_best_config.py \
   --sweep-id mlops-team-northeastern-university/automend-model2/<sweep_id>
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py \
+  --train-config /gcs/automend-model2/configs/train/best_sweep_config.yaml
 
-# 4. (Manual alternative) submit full training pipeline
-python gcp/pipelines/submit_training_pipeline.py \
-  --train-config best_sweep_config.yaml
+# ── Workflow 3: retrain on new data (Windows) ────────────────────────
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py --retrain-only
 
-# 5. Retrain on new data (no sweep needed)
-python gcp/pipelines/submit_training_pipeline.py --retrain-only
+# ── Workflow 4: resume from checkpoint (Windows) ─────────────────────
+gsutil ls gs://automend-model2/outputs/runs/
+MSYS_NO_PATHCONV=1 python gcp/pipelines/submit_training_pipeline.py \
+  --resume-from-checkpoint /gcs/automend-model2/outputs/runs/<run_id>/checkpoints/best_model
 ```
 
 ---

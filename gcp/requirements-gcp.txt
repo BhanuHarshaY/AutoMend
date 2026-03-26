@@ -7,3 +7,6 @@ google-cloud-storage>=2.14.0
 
 # Secret Manager (loads WANDB_API_KEY at runtime — no secrets baked into image)
 google-cloud-secret-manager>=2.20.0
+
+# Compute Engine (only needed locally for --backend compute-engine)
+google-cloud-compute>=1.14.0

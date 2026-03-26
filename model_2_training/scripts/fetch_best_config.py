@@ -12,13 +12,13 @@ It will:
   2. Extract its hyperparameters
   3. Merge them into the base training config (qlora_sft.yaml)
   4. Write the result to configs/train/best_sweep_config.yaml
+  5. Upload the config to GCS so the training container can read it
+     without requiring an image rebuild
 
-Then run full training with the best config:
+Then submit full training (no image rebuild needed):
 
-    python scripts/run_train.py \\
-        --data-config  configs/data/track_b_chatml.yaml \\
-        --model-config configs/model/qwen_baseline.yaml \\
-        --train-config configs/train/best_sweep_config.yaml
+    python gcp/pipelines/submit_training_pipeline.py \\
+        --train-config /gcs/automend-model2/configs/train/best_sweep_config.yaml
 """
 
 from __future__ import annotations
@@ -38,6 +38,11 @@ load_dotenv(_AUTOMEND_ROOT / ".env")
 
 _BASE_TRAIN_CONFIG = _M2_ROOT / "configs/train/qlora_sft.yaml"
 _OUTPUT_CONFIG     = _M2_ROOT / "configs/train/best_sweep_config.yaml"
+
+# GCS — config is uploaded here so the container can read it via FUSE
+# without requiring an image rebuild
+_GCS_BUCKET        = "automend-model2"
+_GCS_CONFIG_PREFIX = "configs/train"
 
 # Keys that live in train config and can be overridden by sweep results
 _TRAIN_KEYS = {
@@ -155,6 +160,36 @@ def save_config(cfg: dict, output_path: Path, best_run, score: float) -> None:
     logger.success(f"Best config saved → {output_path}")
 
 
+def upload_to_gcs(local_path: Path) -> str:
+    """
+    Upload config YAML to GCS so the training container can read it
+    via the GCS FUSE mount without requiring an image rebuild.
+
+    Returns:
+        gs:// URI of the uploaded file, or "" on failure.
+    """
+    try:
+        from google.cloud import storage
+    except ImportError:
+        logger.warning("google-cloud-storage not installed — skipping GCS upload.")
+        return ""
+
+    blob_name = f"{_GCS_CONFIG_PREFIX}/{local_path.name}"
+    gcs_uri   = f"gs://{_GCS_BUCKET}/{blob_name}"
+
+    try:
+        client = storage.Client()
+        bucket = client.bucket(_GCS_BUCKET)
+        blob   = bucket.blob(blob_name)
+        blob.upload_from_filename(str(local_path))
+        logger.success(f"Config uploaded to GCS → {gcs_uri}")
+    except Exception as exc:
+        logger.warning(f"GCS upload failed ({exc}) — image rebuild will be required.")
+        return ""
+
+    return gcs_uri
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fetch best W&B sweep trial and write a training config."
@@ -186,17 +221,28 @@ def main() -> None:
     # Merge into base config
     best_cfg = build_best_config(best_run)
 
-    # Save
+    # Save locally
     save_config(best_cfg, output_path, best_run, score)
 
+    # Upload to GCS so the container reads it via FUSE (no image rebuild needed)
+    gcs_uri = upload_to_gcs(output_path)
+
     # Print next step
-    logger.info("\nNext step — run full training with the best config:")
-    logger.info(
-        "  python scripts/run_train.py \\\n"
-        "      --data-config  configs/data/track_b_chatml.yaml \\\n"
-        "      --model-config configs/model/qwen_baseline.yaml \\\n"
-        f"      --train-config {output_path.relative_to(_M2_ROOT)}"
-    )
+    logger.info("")
+    if gcs_uri:
+        fuse_path = gcs_uri.replace(f"gs://{_GCS_BUCKET}", f"/gcs/{_GCS_BUCKET}")
+        logger.info("Next step — submit full training pipeline (no image rebuild needed):")
+        logger.info(
+            f"  python gcp/pipelines/submit_training_pipeline.py \\\n"
+            f"         --train-config {fuse_path}"
+        )
+    else:
+        logger.info("Next steps — GCS upload failed, rebuild image first:")
+        logger.info("  1. bash gcp/build_and_push.sh")
+        logger.info(
+            f"  2. python gcp/pipelines/submit_training_pipeline.py \\\n"
+            f"         --train-config {output_path.name}"
+        )
 
 
 if __name__ == "__main__":

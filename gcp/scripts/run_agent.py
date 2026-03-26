@@ -14,10 +14,11 @@ import sys
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: run_agent.py <sweep_id>")
+        print("Usage: run_agent.py <sweep_id> [count]")
         sys.exit(1)
 
     sweep_id   = sys.argv[1]
+    count      = sys.argv[2] if len(sys.argv) > 2 else "1"
     project_id = os.environ.get("PROJECT_ID", "automend")
 
     # Fetch W&B API key from Secret Manager (uses Workload Identity / ADC automatically)
@@ -28,8 +29,9 @@ def main() -> None:
     )
     os.environ["WANDB_API_KEY"] = response.payload.data.decode().strip()
     print(f"WANDB_API_KEY loaded from Secret Manager (project={project_id})")
+    print(f"Running {count} sequential trial(s) for sweep: {sweep_id}")
 
-    result = subprocess.call(["wandb", "agent", "--count", "1", sweep_id])
+    result = subprocess.call(["wandb", "agent", "--count", count, sweep_id])
     sys.exit(result)
 
 
