@@ -1,0 +1,12 @@
+# Model configuration for Model 1 — RoBERTa-base Anomaly Classifier
+
+model_name: "roberta-base"
+num_labels: 7
+
+# Full fine-tuning (no LoRA — 125M params fits on a single GPU)
+freeze_base: false
+
+# Focal loss parameters
+focal_loss:
+  gamma: 2.0
+  # alpha: auto  (computed from training label distribution)

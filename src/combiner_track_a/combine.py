@@ -68,6 +68,20 @@ def combine_track_a():
         log.info(f"  Loaded {df.height} rows")
         log.info(f"  Columns: {df.columns}")
         
+        _UPCAST = {
+            pl.Int32: pl.Int64,
+            pl.Int16: pl.Int64,
+            pl.Int8: pl.Int64,
+            pl.List(pl.Int32): pl.List(pl.Int64),
+            pl.List(pl.Int16): pl.List(pl.Int64),
+            pl.List(pl.Int8): pl.List(pl.Int64),
+        }
+        casts = [
+            pl.col(c).cast(_UPCAST[df[c].dtype])
+            for c in df.columns if df[c].dtype in _UPCAST
+        ]
+        if casts:
+            df = df.with_columns(casts)
         df = df.with_columns(pl.lit(input_path.stem).alias("source_dataset"))
         dataframes.append(df)
     

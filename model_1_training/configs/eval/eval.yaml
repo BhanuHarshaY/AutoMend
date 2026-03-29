@@ -1,0 +1,33 @@
+# Evaluation configuration for Model 1
+
+per_device_eval_batch_size: 64
+
+# Metrics to compute
+metrics:
+  - macro_f1
+  - per_class_recall
+  - per_class_f1
+  - confusion_matrix
+  - classification_report
+
+# Visualization
+plots:
+  confusion_matrix: true
+  per_class_bar: true
+  save_format: "png"
+  dpi: 150
+
+# Sensitivity analysis (Captum)
+sensitivity:
+  method: "integrated_gradients"
+  n_samples: 200
+  n_steps: 50
+
+# Bias detection (Fairlearn)
+bias:
+  slice_columns:
+    - source_dataset
+  disparity_threshold: 0.10
+  metrics:
+    - macro_f1
+    - recall

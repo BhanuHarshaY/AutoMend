@@ -147,7 +147,7 @@ uncommitted/
 !requirements.txt
 
 # =============================================================================
-# Model 2 Training — model weights and checkpoints
+# Model Training — model weights and checkpoints
 # =============================================================================
 
 # Model weight files (too large for Git — use DVC or HuggingFace Hub)
@@ -159,9 +159,10 @@ uncommitted/
 *.pth
 
 # All training outputs — regeneratable by rerunning the pipeline
-# (checkpoints, reports, predictions — all ignored to avoid conflicts)
+model_1_training/outputs/
 model_2_training/outputs/
 
 # W&B local run directories (large binary .wandb files + logs)
 # Runs are already synced to wandb.ai — local copies are not needed in Git
+model_1_training/wandb/
 model_2_training/wandb/

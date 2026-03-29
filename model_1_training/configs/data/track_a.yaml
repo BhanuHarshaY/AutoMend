@@ -1,0 +1,29 @@
+# Data configuration for Model 1 — Track A (Trigger Engine)
+# The combined parquet is produced by the data pipeline combiner.
+
+artifact_path: "data/processed/track_A_combined.parquet"
+
+splits_dir: "data/splits"
+
+# Train / val / test ratio
+train_ratio: 0.8
+val_ratio: 0.1
+test_ratio: 0.1
+
+# Max sequence length for RoBERTa (DS2 sequences are padded to 512)
+max_seq_length: 512
+
+# Random seed for reproducible splits
+shuffle_seed: 42
+
+# Label semantics (0-6)
+label_names:
+  - Normal
+  - Resource_Exhaustion
+  - System_Crash
+  - Network_Failure
+  - Data_Drift
+  - Auth_Failure
+  - Permission_Denied
+
+num_labels: 7
