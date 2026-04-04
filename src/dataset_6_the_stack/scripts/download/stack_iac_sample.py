@@ -71,6 +71,13 @@ def _download_ray() -> None:
     import ray
     import ray.data
 
+    if not hasattr(pa, "PyExtensionType"):
+        raise RuntimeError(
+            f"pyarrow {pa.__version__} is incompatible with "
+            f"ray.data.from_huggingface (missing PyExtensionType). "
+            f"Falling back to sequential streaming."
+        )
+
     init_ray()
 
     log.info("Ray Data path — loading HuggingFace dataset")

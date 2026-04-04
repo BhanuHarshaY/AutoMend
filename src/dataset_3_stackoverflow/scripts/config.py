@@ -123,6 +123,10 @@ class PipelineConfig:
         return self.DATA_DIR / "external" / "Stack_Ans_pl.csv"
     
     # === API Configuration ===
+    # Register at https://stackapps.com/ to get a key.
+    # Without a key the daily quota is ~300 requests; with one it's 10,000.
+    # Full mode (max_questions: 6000) needs hundreds of paginated requests —
+    # set STACKOVERFLOW_API_KEY to avoid quota exhaustion.
     STACKOVERFLOW_API_KEY: Optional[str] = os.getenv("STACKOVERFLOW_API_KEY")
     TAGS: tuple = (
         "kubernetes", "terraform", "gpu", "autoscaling",

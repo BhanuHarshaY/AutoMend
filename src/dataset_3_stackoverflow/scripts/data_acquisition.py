@@ -92,9 +92,21 @@ class RateLimitedRequester:
                 self.consecutive_failures = 0
                 
                 data = response.json()
+
+                if "backoff" in data:
+                    logger.info("API requested backoff of %ss", data["backoff"])
+                    time.sleep(data["backoff"])
+
                 remaining = data.get("quota_remaining", "unknown")
-                if remaining != "unknown" and int(remaining) < 100:
-                    logger.warning(f"Low API quota: {remaining} remaining")
+                if remaining != "unknown":
+                    remaining = int(remaining)
+                    if remaining == 0:
+                        raise RuntimeError(
+                            "StackExchange API daily quota exhausted (0 remaining). "
+                            "Set STACKOVERFLOW_API_KEY for a higher quota, or retry tomorrow."
+                        )
+                    if remaining < 100:
+                        logger.warning("Low API quota: %d remaining", remaining)
                 
                 return data
                 

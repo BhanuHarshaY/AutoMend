@@ -226,6 +226,8 @@ def run_preprocessing(
         logger.warning("Ray processing failed (%s), falling back to sequential", e)
         processed = [r for rec in records if (r := process_record(rec)) is not None]
 
+    del records
+
     df = pl.DataFrame(processed)
     logger.info("--- Dataset Statistics ---")
     logger.info("Total records:           %d", df.height)
@@ -239,12 +241,21 @@ def run_preprocessing(
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     logger.info("Remapping %d records to ChatML format...", len(processed))
-    chatml_records = [remap_to_chatml(r) for r in processed]
+    _CHATML_BATCH = 5_000
     chatml_file = PROCESSED_DIR / "glaive_chatml.jsonl"
+    chatml_count = 0
     with open(chatml_file, "w", encoding="utf-8") as f:
-        for record in chatml_records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    logger.info("ChatML file saved: %d records to %s", len(chatml_records), chatml_file)
+        buf: list[str] = []
+        for record in processed:
+            buf.append(json.dumps(remap_to_chatml(record), ensure_ascii=False))
+            if len(buf) >= _CHATML_BATCH:
+                f.write("\n".join(buf) + "\n")
+                chatml_count += len(buf)
+                buf.clear()
+        if buf:
+            f.write("\n".join(buf) + "\n")
+            chatml_count += len(buf)
+    logger.info("ChatML file saved: %d records to %s", chatml_count, chatml_file)
 
     return df
 
