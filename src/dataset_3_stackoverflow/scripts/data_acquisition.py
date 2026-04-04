@@ -216,39 +216,63 @@ def load_answers_from_csv() -> dict:
     return answers
 
 
-def fetch_questions_from_api(requester: RateLimitedRequester) -> list:
-    """Fetch questions from StackOverflow API."""
+def fetch_questions_from_api(requester: RateLimitedRequester, max_questions: int = 0) -> list:
+    """Fetch questions from StackOverflow API with pagination.
+
+    Args:
+        requester: Rate-limited HTTP client.
+        max_questions: Stop after collecting this many questions.
+            0 means no cap (fetch all available pages for every tag).
+    """
     all_questions = []
     seen_ids = set()
-    
+    page_size = 100
+
     for tag in config.TAGS:
+        if max_questions and len(all_questions) >= max_questions:
+            break
+
+        page = 1
         logger.info(f"Fetching questions for tag: {tag}")
-        
-        data = requester.get(
-            "https://api.stackexchange.com/2.3/questions",
-            {
-                "order": "desc",
-                "sort": "votes",
-                "tagged": tag,
-                "site": "stackoverflow",
-                "pagesize": config.QUESTIONS_PER_TAG,
-                "filter": "withbody"
-            }
-        )
-        
-        if not data:
-            logger.warning(f"Failed to fetch questions for {tag}")
-            continue
-        
-        items = data.get("items", [])
-        for item in items:
-            qid = item["question_id"]
-            if qid not in seen_ids and item.get("accepted_answer_id"):
-                seen_ids.add(qid)
-                all_questions.append(item)
-        
-        logger.info(f"Total unique questions: {len(all_questions)}")
-    
+
+        while True:
+            data = requester.get(
+                "https://api.stackexchange.com/2.3/questions",
+                {
+                    "order": "desc",
+                    "sort": "votes",
+                    "tagged": tag,
+                    "site": "stackoverflow",
+                    "pagesize": page_size,
+                    "page": page,
+                    "filter": "withbody",
+                },
+            )
+
+            if not data:
+                logger.warning(f"Failed to fetch page {page} for {tag}")
+                break
+
+            items = data.get("items", [])
+            for item in items:
+                qid = item["question_id"]
+                if qid not in seen_ids and item.get("accepted_answer_id"):
+                    seen_ids.add(qid)
+                    all_questions.append(item)
+
+            logger.info(f"  Tag={tag} page={page}: {len(items)} items, total unique={len(all_questions)}")
+
+            if max_questions and len(all_questions) >= max_questions:
+                break
+            if not data.get("has_more", False):
+                break
+
+            page += 1
+
+    if max_questions and len(all_questions) > max_questions:
+        all_questions = all_questions[:max_questions]
+
+    logger.info(f"Total unique questions fetched: {len(all_questions)}")
     return all_questions
 
 
@@ -285,10 +309,14 @@ def fetch_answers_batch(requester: RateLimitedRequester, answer_ids: list) -> di
     return fetched
 
 
-def run_acquisition(use_csv: bool = False) -> dict:
+def run_acquisition(use_csv: bool = False, max_questions: int = 0) -> dict:
     """
     Main acquisition function - entry point for Airflow task.
-    
+
+    Args:
+        use_csv: If True, load from local CSV instead of API.
+        max_questions: Cap on questions to fetch via API (0 = no cap).
+
     Returns:
         dict: Statistics about the acquisition process
     """
@@ -326,7 +354,7 @@ def run_acquisition(use_csv: bool = False) -> dict:
         else:
             requester = RateLimitedRequester()
             
-            api_questions = fetch_questions_from_api(requester)
+            api_questions = fetch_questions_from_api(requester, max_questions=max_questions)
             
             with open(config.raw_dir / "questions_raw.json", "w", encoding="utf-8") as f:
                 json.dump({"items": api_questions}, f, indent=2)

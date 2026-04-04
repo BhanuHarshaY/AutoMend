@@ -1,0 +1,297 @@
+# PIPELINE DEFINITION
+# Name: automend-model1-pipeline
+# Description: AutoMend Model 1 — RoBERTa Anomaly Detector
+components:
+  comp-op:
+    executorLabel: exec-op
+  comp-op-2:
+    executorLabel: exec-op-2
+  comp-op-3:
+    executorLabel: exec-op-3
+  comp-op-4:
+    executorLabel: exec-op-4
+  comp-op-5:
+    executorLabel: exec-op-5
+  comp-op-6:
+    executorLabel: exec-op-6
+defaultPipelineRoot: gs://automend-model1/pipeline_runs
+deploymentSpec:
+  executors:
+    exec-op:
+      container:
+        command:
+        - python
+        - -m
+        - model_1_training.scripts.run_split
+        - --config
+        - /workspace/model_1_training/configs/data/track_a.yaml
+        - --artifact
+        - /gcs/automend-model1/data/track_A_combined.parquet
+        - --splits-dir
+        - /gcs/automend-model1/data/splits
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model1
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train-model1:latest
+        resources:
+          cpuLimit: 4.0
+          memoryLimit: 16.0
+          resourceCpuLimit: '4'
+          resourceMemoryLimit: 16G
+    exec-op-2:
+      container:
+        command:
+        - python
+        - -m
+        - model_1_training.scripts.run_train
+        - --data-config
+        - /workspace/model_1_training/configs/data/track_a.yaml
+        - --model-config
+        - /workspace/model_1_training/configs/model/roberta_base.yaml
+        - --train-config
+        - /workspace/model_1_training/configs/train/full_finetune.yaml
+        - --output-dir
+        - /gcs/automend-model1/outputs/runs/20260401-114056/checkpoints
+        - --splits-dir
+        - /gcs/automend-model1/data/splits
+        - --artifact
+        - /gcs/automend-model1/data/track_A_combined.parquet
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model1
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train-model1:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: NVIDIA_L4
+            type: NVIDIA_L4
+          cpuLimit: 8.0
+          memoryLimit: 32.0
+          resourceCpuLimit: '8'
+          resourceMemoryLimit: 32G
+    exec-op-3:
+      container:
+        command:
+        - python
+        - -m
+        - model_1_training.scripts.run_eval
+        - --checkpoint
+        - /gcs/automend-model1/outputs/runs/20260401-114056/checkpoints/best_model
+        - --split
+        - /gcs/automend-model1/data/splits/val.parquet
+        - --output-dir
+        - /gcs/automend-model1/outputs/runs/20260401-114056/reports/val
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model1
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train-model1:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: NVIDIA_L4
+            type: NVIDIA_L4
+          cpuLimit: 8.0
+          memoryLimit: 32.0
+          resourceCpuLimit: '8'
+          resourceMemoryLimit: 32G
+    exec-op-4:
+      container:
+        command:
+        - python
+        - -m
+        - model_1_training.scripts.run_eval
+        - --checkpoint
+        - /gcs/automend-model1/outputs/runs/20260401-114056/checkpoints/best_model
+        - --split
+        - /gcs/automend-model1/data/splits/test.parquet
+        - --output-dir
+        - /gcs/automend-model1/outputs/runs/20260401-114056/reports/test
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model1
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train-model1:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: NVIDIA_L4
+            type: NVIDIA_L4
+          cpuLimit: 8.0
+          memoryLimit: 32.0
+          resourceCpuLimit: '8'
+          resourceMemoryLimit: 32G
+    exec-op-5:
+      container:
+        command:
+        - python
+        - -m
+        - model_1_training.scripts.run_sensitivity
+        - --checkpoint
+        - /gcs/automend-model1/outputs/runs/20260401-114056/checkpoints/best_model
+        - --split
+        - /gcs/automend-model1/data/splits/val.parquet
+        - --output-dir
+        - /gcs/automend-model1/outputs/runs/20260401-114056/reports/sensitivity
+        - --anomaly-only
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model1
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train-model1:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: NVIDIA_L4
+            type: NVIDIA_L4
+          cpuLimit: 8.0
+          memoryLimit: 32.0
+          resourceCpuLimit: '8'
+          resourceMemoryLimit: 32G
+    exec-op-6:
+      container:
+        command:
+        - python
+        - -m
+        - model_1_training.scripts.run_bias
+        - --checkpoint
+        - /gcs/automend-model1/outputs/runs/20260401-114056/checkpoints/best_model
+        - --split
+        - /gcs/automend-model1/data/splits/val.parquet
+        - --output-dir
+        - /gcs/automend-model1/outputs/runs/20260401-114056/reports/bias
+        env:
+        - name: WANDB_PROJECT
+          value: automend-model1
+        - name: WANDB_ENTITY
+          value: mlops-team-northeastern-university
+        - name: WANDB_START_METHOD
+          value: thread
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONPATH
+          value: /workspace
+        - name: PROJECT_ID
+          value: automend
+        image: us-central1-docker.pkg.dev/automend/automend-images/automend-train-model1:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: NVIDIA_L4
+            type: NVIDIA_L4
+          cpuLimit: 8.0
+          memoryLimit: 32.0
+          resourceCpuLimit: '8'
+          resourceMemoryLimit: 32G
+pipelineInfo:
+  description: "AutoMend Model 1 \u2014 RoBERTa Anomaly Detector"
+  name: automend-model1-pipeline
+root:
+  dag:
+    tasks:
+      op:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op
+        taskInfo:
+          name: 1 - Split data
+      op-2:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op-2
+        dependentTasks:
+        - op
+        taskInfo:
+          name: 2 - Train RoBERTa (GPU)
+      op-3:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op-3
+        dependentTasks:
+        - op-2
+        taskInfo:
+          name: 3 - Evaluate (val)
+      op-4:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op-4
+        dependentTasks:
+        - op-3
+        taskInfo:
+          name: 4 - Evaluate (test)
+      op-5:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op-5
+        dependentTasks:
+        - op-4
+        taskInfo:
+          name: 5 - Sensitivity (Captum IG)
+      op-6:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-op-6
+        dependentTasks:
+        - op-5
+        taskInfo:
+          name: 6 - Bias detection (Fairlearn)
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0

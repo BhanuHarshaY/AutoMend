@@ -61,7 +61,7 @@ ACQUIRE_CONFIG = {
     "ds3": {
         "dummy":  {"source": "seed", "num_rows": 50},
         "sample": {"source": "api", "max_questions": 500},
-        "full":   {"source": "api", "max_questions": 0},  # 0 = no cap
+        "full":   {"source": "api", "max_questions": 6000},
     },
     "ds4": {
         "dummy":  {"prompt_set": "default", "prompt_count": 15},

@@ -53,6 +53,8 @@ def main() -> None:
             "--data-config", "/workspace/model_1_training/configs/data/track_a.yaml",
             "--model-config", "/workspace/model_1_training/configs/model/roberta_base.yaml",
             "--train-config", "/workspace/model_1_training/configs/train/full_finetune.yaml",
+            "--artifact", f"{GCS_FUSE_MOUNT}/data/track_A_combined.parquet",
+            "--splits-dir", f"{GCS_FUSE_MOUNT}/data/splits",
         ],
     )
 

@@ -32,7 +32,14 @@ from loguru import logger
 from model_1_training.src.utils.config import load_yaml, save_yaml
 
 
-def _train_fn(config: dict, data_cfg: dict, model_cfg: dict, base_train_cfg: dict):
+def _train_fn(
+    config: dict,
+    data_cfg: dict,
+    model_cfg: dict,
+    base_train_cfg: dict,
+    artifact_path: str | None = None,
+    splits_dir_override: str | None = None,
+):
     """
     Single trial training function invoked by Ray Tune.
 
@@ -58,14 +65,16 @@ def _train_fn(config: dict, data_cfg: dict, model_cfg: dict, base_train_cfg: dic
         model_cfg=model_cfg,
         train_cfg=train_cfg,
         m1_root=M1_ROOT,
+        artifact_path=artifact_path,
+        splits_dir=splits_dir_override,
         output_dir=trial_output,
     )
 
     from model_1_training.src.eval.evaluator import evaluate
-    splits_dir = M1_ROOT / data_cfg.get("splits_dir", "data/splits")
+    _splits = Path(splits_dir_override) if splits_dir_override else M1_ROOT / data_cfg.get("splits_dir", "data/splits")
     metrics = evaluate(
         checkpoint_dir=best_model,
-        split_path=splits_dir / "val.parquet",
+        split_path=_splits / "val.parquet",
         output_dir=trial_output / "eval",
         num_labels=model_cfg.get("num_labels", 7),
     )
@@ -77,7 +86,14 @@ def _train_fn(config: dict, data_cfg: dict, model_cfg: dict, base_train_cfg: dic
     })
 
 
-def run_sweep(sweep_cfg: dict, data_cfg: dict, model_cfg: dict, train_cfg: dict) -> dict:
+def run_sweep(
+    sweep_cfg: dict,
+    data_cfg: dict,
+    model_cfg: dict,
+    train_cfg: dict,
+    artifact_path: str | None = None,
+    splits_dir: str | None = None,
+) -> dict:
     """Launch Ray Tune sweep with Optuna search."""
     import ray
     from ray import tune
@@ -112,7 +128,14 @@ def run_sweep(sweep_cfg: dict, data_cfg: dict, model_cfg: dict, train_cfg: dict)
     if not ray.is_initialized():
         ray.init(ignore_reinit_error=True)
 
-    trainable = partial(_train_fn, data_cfg=data_cfg, model_cfg=model_cfg, base_train_cfg=train_cfg)
+    trainable = partial(
+        _train_fn,
+        data_cfg=data_cfg,
+        model_cfg=model_cfg,
+        base_train_cfg=train_cfg,
+        artifact_path=artifact_path,
+        splits_dir_override=splits_dir,
+    )
 
     analysis = tune.run(
         trainable,
@@ -147,6 +170,8 @@ def main() -> None:
     parser.add_argument("--data-config", default=str(M1_ROOT / "configs/data/track_a.yaml"))
     parser.add_argument("--model-config", default=str(M1_ROOT / "configs/model/roberta_base.yaml"))
     parser.add_argument("--train-config", default=str(M1_ROOT / "configs/train/full_finetune.yaml"))
+    parser.add_argument("--artifact", default=None, help="Override path to track_A_combined.parquet")
+    parser.add_argument("--splits-dir", default=None, help="Override path to splits directory")
     args = parser.parse_args()
 
     sweep_cfg = load_yaml(args.sweep_config)
@@ -154,7 +179,11 @@ def main() -> None:
     model_cfg = load_yaml(args.model_config)
     train_cfg = load_yaml(args.train_config)
 
-    result = run_sweep(sweep_cfg, data_cfg, model_cfg, train_cfg)
+    result = run_sweep(
+        sweep_cfg, data_cfg, model_cfg, train_cfg,
+        artifact_path=args.artifact,
+        splits_dir=args.splits_dir,
+    )
     print(f"\nSweep complete!")
     print(f"Best Macro F1: {result['best_result']['eval_macro_f1']:.4f}")
     print(f"Best config: {result['best_config']}")

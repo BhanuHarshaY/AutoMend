@@ -187,7 +187,7 @@ def _acquire_ds3(raw_dir: Path, project_root: Path, mode: str, cfg: dict) -> dic
     else:
         from data_acquisition import run_acquisition
         max_q = cfg.get("max_questions", 0)
-        stats = run_acquisition(use_csv=False)
+        stats = run_acquisition(use_csv=False, max_questions=max_q)
         return {"status": "downloaded", "mode": mode, **stats}
 
 
@@ -219,7 +219,7 @@ def _acquire_ds5(raw_dir: Path, project_root: Path, mode: str, cfg: dict) -> dic
         from data_acquisition import fetch_and_save
         sample_size = cfg.get("sample_size", 5000)
         output = raw_dir / "glaive_raw.jsonl"
-        count = fetch_and_save(sample_size=sample_size if sample_size > 0 else None, output_file=output)
+        count = fetch_and_save(sample_size=sample_size, output_file=output)
         return {"status": "downloaded", "mode": mode, "record_count": count}
 
 
