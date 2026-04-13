@@ -71,12 +71,12 @@ ACQUIRE_CONFIG = {
     "ds5": {
         "dummy":  {"source": "seed", "num_records": 100},
         "sample": {"source": "huggingface", "sample_size": 5000},
-        "full":   {"source": "huggingface", "sample_size": 0},  # 0 = no limit
+        "full":   {"source": "huggingface", "sample_size": 6000},
     },
     "ds6": {
         "dummy":  {"source": "seed", "num_records": 50},
         "sample": {"source": "huggingface", "sample_size": 20000},
-        "full":   {"source": "huggingface", "sample_size": 0},  # 0 = no limit
+        "full":   {"source": "huggingface", "sample_size": 6000},
     },
 }
 
