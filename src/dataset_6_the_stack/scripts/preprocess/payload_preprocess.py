@@ -33,19 +33,25 @@ def build_prompt_rules(cfg: dict) -> list[dict]:
     return cfg["prompt_rules"]
 
 # helper functions
+_SPDX_SPLIT = re.compile(r"\s+(?:AND|OR|WITH)\s+", re.IGNORECASE)
+
+
 def _collect_licenses(row: dict) -> list[str]:
     """
     Collects license strings from all three Stack license fields.
-    Returns lowercased values — comparison to permissive_licenses allowlist
-    normalises both sides so matching is correct.
+    Splits compound SPDX expressions (e.g. "Apache-2.0 AND MIT") into
+    individual components so each can be matched against the allowlist.
+    Returns lowercased values.
     """
     out: list[str] = []
     for key in ("max_stars_repo_licenses", "max_issues_repo_licenses",
                 "max_forks_repo_licenses"):
         v = row.get(key) or []
         if isinstance(v, list):
-            out.extend(x for x in v if isinstance(x, str) and x.strip())
-    return [x.strip().lower() for x in out]
+            for x in v:
+                if isinstance(x, str) and x.strip():
+                    out.extend(_SPDX_SPLIT.split(x))
+    return [x.strip().lower() for x in out if x.strip()]
 
 def _best_path(row: dict) -> str:
     """Picks the first non-empty repo path (stars → issues → forks)"""

@@ -64,7 +64,7 @@ filters:
 
   # strict ML infra (have K8s gates AND an ML keyword only)
   require_ml_infra: true
-  ml_infra_mode: "strict"
+  ml_infra_mode: "relaxed"
   ml_infra_groups: ["ml_gpu", "kserve_seldon", "mlops"]
 
 # PII redaction
